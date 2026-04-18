@@ -3,7 +3,7 @@ import streamlit as st
 # 1. SET THE MASTER CONFIG ONCE
 st.set_page_config(page_title="Miloto Fleet System", layout="wide", page_icon="🚛")
 
-# 2. DEFINE THE PAGES (Updated to look for flat files instead of a folder)
+# 2. DEFINE THE PAGES (Flat files, no folders)
 oil_page = st.Page("oil_and_servicing.py", title="Oil & Servicing", icon="🛢️")
 logistics_page = st.Page("logistics.py", title="Logistics Trips", icon="🚛")
 workshop_page = st.Page("workshop.py", title="Workshop Log", icon="🛠️")
@@ -43,30 +43,27 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 5. THE LOGIN SCREEN
+# 5. THE LOGIN SCREEN (Mobile Optimized - Full Width)
 if st.session_state.role is None:
-    # Center the login box
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col2:
-        st.title("🔐 Miloto Fleet Login")
-        st.write("Please enter your access PIN to continue.")
-        
-        pin = st.text_input("PIN Code", type="password")
-        if st.button("Secure Login", use_container_width=True):
-            if pin == "1111":  # Master Admin
-                st.session_state.role = "Admin"
-                st.rerun()
-            elif pin == "2222":  # Logistics Team
-                st.session_state.role = "Logistics"
-                st.rerun()
-            elif pin == "3333":  # Mechanics
-                st.session_state.role = "Mechanic"
-                st.rerun()
-            elif pin == "4444":  # Workshop Checkers
-                st.session_state.role = "Checker"
-                st.rerun()
-            else:
-                st.error("❌ Invalid PIN. Please try again.")
+    st.title("🔐 Miloto Fleet Login")
+    st.write("Please enter your access PIN to continue.")
+    
+    pin = st.text_input("PIN Code", type="password")
+    if st.button("Secure Login", use_container_width=True):
+        if pin == "1111":  # Master Admin
+            st.session_state.role = "Admin"
+            st.rerun()
+        elif pin == "2222":  # Logistics Team
+            st.session_state.role = "Logistics"
+            st.rerun()
+        elif pin == "3333":  # Mechanics
+            st.session_state.role = "Mechanic"
+            st.rerun()
+        elif pin == "4444":  # Workshop Checkers
+            st.session_state.role = "Checker"
+            st.rerun()
+        else:
+            st.error("❌ Invalid PIN. Please try again.")
 
 # 6. ROUTE THE USER BASED ON THEIR ROLE
 else:
