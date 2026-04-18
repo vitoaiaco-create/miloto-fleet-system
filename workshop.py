@@ -6,77 +6,74 @@ from datetime import datetime
 # --- 1. SETUP & CONFIGURATION ---
 DATA_FILE = "workshop_log.csv"
 
-# 👇 UPDATE YOUR FLEET NUMBERS HERE 👇
-# Change these numbers to match your actual Miloto fleet! 
-# Make sure each truck is wrapped in "quotes" and separated by a comma.
-LIST_OF_TRUCKS = [
-    "101", "102", "103", "104", "105", 
-    "201", "202", "203", "204", "205"
-]
+# GENERATED MILOTO HEAVY FLEET (01-127, excluding 30, 48, 107)
+# Format: MILOTO-XX(MTLXX)
+def generate_fleet():
+    fleet = []
+    excluded = {30, 48, 107}
+    for i in range(1, 128):
+        if i in excluded:
+            continue
+        # Format with leading zero for 1-9
+        num_str = f"{i:02d}"
+        fleet.append(f"MILOTO-{num_str}(MTL{num_str})")
+    return fleet
 
-# Create the CSV if it doesn't exist (Removed the 'Reason' column)
+LIST_OF_TRUCKS = generate_fleet()
+
+# Ensure the CSV exists with correct columns
 if not os.path.exists(DATA_FILE):
-    df_empty = pd.DataFrame(columns=["Date", "Trucks", "Notes", "Logged By"])
+    df_empty = pd.DataFrame(columns=["Date", "Trucks", "Logged By"])
     df_empty.to_csv(DATA_FILE, index=False)
 
 # --- 2. HEADER ---
 st.title("🛠️ Workshop & Downtime Log")
-st.markdown("Log vehicles entering the workshop and manage historical downtime records.")
+st.markdown("Select trucks to log into the workshop system.")
 st.divider()
 
-# --- 3. LOG NEW DOWNTIME ---
-st.subheader("📝 Log New Downtime")
+# --- 3. LOG NEW ENTRY ---
+log_date = st.date_input("Date", datetime.today())
 
-col1, col2 = st.columns(2)
-
-with col1:
-    log_date = st.date_input("Date", datetime.today())
-    selected_trucks = st.multiselect("Select Trucks", LIST_OF_TRUCKS, key="truck_selector")
-
-with col2:
-    # Moved Notes up to take the space of the removed Reason box
-    notes = st.text_area("Mechanic Notes", height=100)
+# Dropdown with the exact MILOTO-XX(MTLXX) format
+selected_trucks = st.multiselect(
+    "Select Trucks", 
+    LIST_OF_TRUCKS, 
+    key="truck_selector"
+)
 
 if st.button("💾 Save to Workshop Log", use_container_width=True):
-    if len(selected_trucks) == 0:
-        st.warning("⚠️ Please select at least one truck before saving.")
+    if not selected_trucks:
+        st.warning("⚠️ Please select at least one truck.")
     else:
-        # Format the new data without the Reason column
         new_data = {
             "Date": [log_date.strftime("%Y-%m-%d")],
             "Trucks": [", ".join(selected_trucks)],
-            "Notes": [notes],
             "Logged By": [st.session_state.get("role", "Unknown")]
         }
         df_new = pd.DataFrame(new_data)
-        
-        # Save it to the CSV file
         df_new.to_csv(DATA_FILE, mode='a', header=False, index=False)
         
-        # Empty the truck box memory and instantly refresh the page
+        # Clear selection and refresh
         st.session_state.truck_selector = []
         st.rerun()
 
 st.divider()
 
 # --- 4. HISTORICAL LOG ---
-st.subheader("📚 Historical Downtime Record")
-st.caption("Tip: Click the checkbox on the far left of any row and press 'Delete' on your keyboard to remove mistakes.")
+st.subheader("📚 Historical Record")
+if os.path.exists(DATA_FILE):
+    df_history = pd.read_csv(DATA_FILE)
+    
+    # Editable table for deletions
+    edited_history = st.data_editor(
+        df_history,
+        num_rows="dynamic",
+        use_container_width=True,
+        key="history_editor",
+        hide_index=True
+    )
 
-# Load the saved data
-df_history = pd.read_csv(DATA_FILE)
-
-# Editable spreadsheet
-edited_history = st.data_editor(
-    df_history,
-    num_rows="dynamic",
-    use_container_width=True,
-    key="history_editor",
-    hide_index=True
-)
-
-# Auto-Save Logic for the Historical Log
-if not edited_history.equals(df_history):
-    edited_history.to_csv(DATA_FILE, index=False)
-    st.success("🔄 Log updated successfully!")
-    st.rerun()
+    if not edited_history.equals(df_history):
+        edited_history.to_csv(DATA_FILE, index=False)
+        st.success("🔄 Log updated!")
+        st.rerun()
