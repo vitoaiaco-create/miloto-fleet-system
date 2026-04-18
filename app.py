@@ -3,10 +3,10 @@ import streamlit as st
 # 1. SET THE MASTER CONFIG ONCE
 st.set_page_config(page_title="Miloto Fleet System", layout="wide", page_icon="🚛")
 
-# 2. DEFINE THE PAGES
-oil_page = st.Page("views/oil_and_servicing.py", title="Oil & Servicing", icon="🛢️")
-logistics_page = st.Page("views/logistics.py", title="Logistics Trips", icon="🚛")
-workshop_page = st.Page("views/workshop.py", title="Workshop Log", icon="🛠️")
+# 2. DEFINE THE PAGES (Updated to look for flat files instead of a folder)
+oil_page = st.Page("oil_and_servicing.py", title="Oil & Servicing", icon="🛢️")
+logistics_page = st.Page("logistics.py", title="Logistics Trips", icon="🚛")
+workshop_page = st.Page("workshop.py", title="Workshop Log", icon="🛠️")
 
 # 3. INITIALIZE SECURITY STATE
 if "role" not in st.session_state:
