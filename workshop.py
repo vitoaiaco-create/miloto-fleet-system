@@ -1,105 +1,78 @@
 import streamlit as st
 import pandas as pd
 import os
-from datetime import date
+from datetime import datetime
 
-st.set_page_config(page_title="Workshop Log", layout="wide")
-st.title("🛠️ Daily Workshop & Downtime Log")
-st.info("Morning logs are provisional. Evening logs are final and will OVERRIDE any morning logs for the same date.")
+# --- 1. SETUP & CONFIGURATION ---
+# This creates a safe storage file for your data if it doesn't exist yet
+DATA_FILE = "workshop_log.csv"
+LIST_OF_TRUCKS = ["Truck 001", "Truck 002", "Truck 003", "Truck 004", "Truck 005"]
 
-# 1. Setup the Database File
-WORKSHOP_FILE = "Workshop_Log.csv"
+if not os.path.exists(DATA_FILE):
+    df_empty = pd.DataFrame(columns=["Date", "Trucks", "Reason", "Notes", "Logged By"])
+    df_empty.to_csv(DATA_FILE, index=False)
 
-# Create the file if it doesn't exist yet
-if not os.path.exists(WORKSHOP_FILE):
-    df_empty = pd.DataFrame(columns=["Date", "Truck_ID", "Status", "Logged_By"])
-    df_empty.to_csv(WORKSHOP_FILE, index=False)
+# --- 2. HEADER ---
+st.title("🛠️ Workshop & Downtime Log")
+st.markdown("Log vehicles entering the workshop and manage historical downtime records.")
+st.divider()
 
-# Load existing data
-df_log = pd.read_csv(WORKSHOP_FILE)
+# --- 3. LOG NEW DOWNTIME (WITH AUTO-CLEAR) ---
+st.subheader("📝 Log New Downtime")
 
-# 2. The Input Form
-st.subheader("📋 Log Daily Downtime")
+col1, col2 = st.columns(2)
 
-# Generate a list of Miloto Trucks to pick from (excluding locals 30, 48, 107)
-miloto_trucks = [f"MILOTO-{str(i).zfill(2)}(MTL{str(i).zfill(2)})" for i in range(1, 150) if i not in [30, 48, 107]]
+with col1:
+    log_date = st.date_input("Date", datetime.today())
+    # FIX 1: The 'key' connects this box to Streamlit's memory so we can empty it later
+    selected_trucks = st.multiselect("Select Trucks", LIST_OF_TRUCKS, key="truck_selector")
 
-with st.form("workshop_form"):
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        log_date = st.date_input("Select Date", date.today())
-        logged_by = st.selectbox("Logged By", ["Morning Checker", "Evening Checker", "Workshop Manager"])
+with col2:
+    reason = st.selectbox("Reason for Downtime", ["Routine Service", "Breakdown", "Tyre Change", "Accident/Repair"])
+    notes = st.text_area("Mechanic Notes")
+
+if st.button("💾 Save to Workshop Log", use_container_width=True):
+    if len(selected_trucks) == 0:
+        st.warning("⚠️ Please select at least one truck before saving.")
+    else:
+        # Format the new data
+        new_data = {
+            "Date": [log_date.strftime("%Y-%m-%d")],
+            "Trucks": [", ".join(selected_trucks)],
+            "Reason": [reason],
+            "Notes": [notes],
+            "Logged By": [st.session_state.get("role", "Unknown")]
+        }
+        df_new = pd.DataFrame(new_data)
         
-    with col2:
-        st.markdown("Select **ALL** trucks currently parked in the workshop:")
-        down_trucks = st.multiselect("Select Trucks", miloto_trucks)
+        # Save it to the CSV file
+        df_new.to_csv(DATA_FILE, mode='a', header=False, index=False)
         
-    submit = st.form_submit_button("💾 Save to Workshop Log")
-
-    if submit:
-        # ==========================================
-        # OVERRIDE LOGIC: Evening / Manager
-        # ==========================================
-        if logged_by in ["Evening Checker", "Workshop Manager"]:
-            # 1. Delete all previous records for this specific date
-            df_log = df_log[df_log['Date'] != str(log_date)]
-            
-            # 2. Add the new final list
-            new_rows = []
-            for truck in down_trucks:
-                new_rows.append({
-                    "Date": str(log_date), "Truck_ID": truck, 
-                    "Status": "Lost Day (EOD Confirmed)", "Logged_By": logged_by
-                })
-            
-            if new_rows:
-                df_log = pd.concat([df_log, pd.DataFrame(new_rows)], ignore_index=True)
-            
-            df_log.to_csv(WORKSHOP_FILE, index=False)
-            st.success(f"✅ Evening Reconciliation Complete! The log for {log_date} has been overwritten with these {len(down_trucks)} trucks.")
-            st.rerun()
-
-        # ==========================================
-        # PROVISIONAL LOGIC: Morning
-        # ==========================================
-        elif logged_by == "Morning Checker":
-            if not down_trucks:
-                st.warning("⚠️ Please select at least one truck.")
-            else:
-                new_rows = []
-                for truck in down_trucks:
-                    # Only add if it doesn't already exist for this date
-                    duplicate_check = df_log[(df_log['Date'] == str(log_date)) & (df_log['Truck_ID'] == truck)]
-                    if duplicate_check.empty:
-                        new_rows.append({
-                            "Date": str(log_date), "Truck_ID": truck, 
-                            "Status": "Provisional (Morning)", "Logged_By": logged_by
-                        })
-                
-                if new_rows:
-                    df_log = pd.concat([df_log, pd.DataFrame(new_rows)], ignore_index=True)
-                    df_log.to_csv(WORKSHOP_FILE, index=False)
-                    st.success(f"✅ Morning Log Saved! Added {len(new_rows)} trucks for {log_date}.")
-                    st.rerun()
-                else:
-                    st.info("These trucks are already logged for this morning. No duplicates added.")
+        # FIX 1 (Continued): Empty the truck box memory and instantly refresh the page
+        st.session_state.truck_selector = []
+        st.rerun()
 
 st.divider()
 
-# 3. View the History
+# --- 4. HISTORICAL LOG (WITH DELETION CAPABILITY) ---
 st.subheader("📚 Historical Downtime Record")
-colA, colB = st.columns([3, 1])
+st.caption("Tip: Click the checkbox on the far left of any row and press 'Delete' on your keyboard to remove mistakes.")
 
-with colA:
-    # Display the log, sorted by newest first
-    st.dataframe(df_log.sort_values("Date", ascending=False), use_container_width=True, hide_index=True)
+# Load the saved data
+df_history = pd.read_csv(DATA_FILE)
 
-with colB:
-    st.markdown("**Total Days Lost per Truck**")
-    if not df_log.empty:
-        lost_days = df_log['Truck_ID'].value_counts().reset_index()
-        lost_days.columns = ['Truck_ID', 'Days Lost']
-        st.dataframe(lost_days, use_container_width=True, hide_index=True)
-    else:
-        st.write("No downtime recorded yet.")
+# FIX 2: Using st.data_editor with num_rows="dynamic" turns the table into an editable spreadsheet
+edited_history = st.data_editor(
+    df_history,
+    num_rows="dynamic",
+    use_container_width=True,
+    key="history_editor",
+    hide_index=True
+)
+
+# Auto-Save Logic for the Historical Log: 
+# If a checker deletes a row, this detects the change and automatically saves the new, shorter list.
+if not edited_history.equals(df_history):
+    edited_history.to_csv(DATA_FILE, index=False)
+    st.success("🔄 Log updated successfully!")
+    st.rerun()
