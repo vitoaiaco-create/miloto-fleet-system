@@ -6,7 +6,6 @@ from datetime import datetime
 # --- 1. SETUP & CONFIGURATION ---
 DATA_FILE = "workshop_log.csv"
 
-# GENERATED MILOTO HEAVY FLEET (01-127, excluding 30, 48, 107)
 def generate_fleet():
     fleet = []
     excluded = {30, 48, 107}
@@ -19,70 +18,71 @@ def generate_fleet():
 
 LIST_OF_TRUCKS = generate_fleet()
 
-# Ensure the CSV exists
 if not os.path.exists(DATA_FILE):
-    df_empty = pd.DataFrame(columns=["Date", "Trucks", "Logged By"])
+    df_empty = pd.DataFrame(columns=["Date", "Trucks", "Status", "Logged By"])
     df_empty.to_csv(DATA_FILE, index=False)
 
-# --- 2. THE LOGIC FUNCTION (The Fix) ---
+# --- 2. LOGIC FUNCTIONS ---
 def save_entry():
-    # Pull the data from the widget state
     selected = st.session_state.truck_selector
     date_val = st.session_state.date_holder
+    shift_type = st.session_state.shift_holder
     
     if not selected:
-        st.error("⚠️ Please select at least one truck.")
+        st.error("⚠️ Select trucks first!")
         return
 
-    # Create the row
-    new_data = {
-        "Date": [date_val.strftime("%Y-%m-%d")],
-        "Trucks": [", ".join(selected)],
-        "Logged By": [st.session_state.get("role", "Unknown")]
-    }
-    df_new = pd.DataFrame(new_data)
+    df = pd.read_csv(DATA_FILE)
+    date_str = date_val.strftime("%Y-%m-%d")
     
-    # Save to CSV
-    df_new.to_csv(DATA_FILE, mode='a', header=False, index=False)
-    
-    # CLEAR THE BOX: This is the safe way to do it
+    for truck in selected:
+        mask = (df['Date'] == date_str) & (df['Trucks'] == truck)
+        if mask.any() and shift_type == "Evening (Final)":
+            df.loc[mask, 'Status'] = "Final"
+        else:
+            new_row = {"Date": date_str, "Trucks": truck, "Status": "Provisional" if "Morning" in shift_type else "Final", "Logged By": st.session_state.get("role", "User")}
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+    df.to_csv(DATA_FILE, index=False)
     st.session_state.truck_selector = []
-    st.success("✅ Logged successfully!")
+
+def delete_last_row():
+    df = pd.read_csv(DATA_FILE)
+    if not df.empty:
+        df = df.iloc[:-1] # Removes the very last line submitted
+        df.to_csv(DATA_FILE, index=False)
+        st.toast("🗑️ Last entry deleted!")
 
 # --- 3. UI LAYOUT ---
 st.title("🛠️ Workshop & Downtime Log")
-st.markdown("Select trucks to log into the workshop system.")
+
+col1, col2 = st.columns(2)
+with col1:
+    st.date_input("Date", datetime.today(), key="date_holder")
+with col2:
+    st.selectbox("Shift", ["Morning (Provisional)", "Evening (Final)"], key="shift_holder")
+
+st.multiselect("Select Trucks", LIST_OF_TRUCKS, key="truck_selector")
+
+# Action Buttons
+st.button("💾 Submit Logs", use_container_width=True, on_click=save_entry, type="primary")
+
+# --- 4. THE MISTAKE FIX (DEDICATED BUTTONS) ---
 st.divider()
+st.subheader("📋 Submitted Logs")
 
-# Inputs
-st.date_input("Date", datetime.today(), key="date_holder")
-
-st.multiselect(
-    "Select Trucks", 
-    LIST_OF_TRUCKS, 
-    key="truck_selector"
-)
-
-# The Save Button now calls our function directly
-st.button("💾 Save to Workshop Log", use_container_width=True, on_click=save_entry)
-
-st.divider()
-
-# --- 4. HISTORICAL LOG ---
-st.subheader("📚 Historical Record")
 if os.path.exists(DATA_FILE):
     df_history = pd.read_csv(DATA_FILE)
     
-    # Editable table for deletions
-    edited_history = st.data_editor(
-        df_history,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="history_editor",
-        hide_index=True
-    )
+    # Display the table (Editable for manual row deletion)
+    edited_df = st.data_editor(df_history, use_container_width=True, num_rows="dynamic", hide_index=True)
+    
+    # Check for changes in the table (manual deletion)
+    if len(edited_df) < len(df_history):
+        edited_df.to_csv(DATA_FILE, index=False)
+        st.rerun()
 
-    # Save changes if a row is deleted
-    if not edited_history.equals(df_history):
-        edited_history.to_csv(DATA_FILE, index=False)
+    # Rapid Delete Button for immediate mistakes
+    if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
+        delete_last_row()
         st.rerun()
