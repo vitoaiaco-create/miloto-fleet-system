@@ -1,153 +1,103 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+from pyairtable import Api
+from datetime import datetime
 
-st.title("🚛 Miloto Live Fleet Performance")
+# --- 1. AIRTABLE CONNECTION ---
+api = Api(st.secrets["AIRTABLE_TOKEN"])
+table = api.table(st.secrets["AIRTABLE_BASE_ID"], "Logistics Trips")
 
-st.info("Upload your daily Trips file here. This runs independently of your maintenance data.")
+# --- 2. FLEET SETUP ---
+def generate_fleet():
+    fleet = []
+    excluded = {30, 48, 107}
+    for i in range(1, 128):
+        if i in excluded: continue
+        num_str = f"{i:02d}"
+        fleet.append(f"MILOTO-{num_str}(MTL{num_str})")
+    return fleet
 
-# Add 'xlsx' to the accepted file types
-uploaded_file = st.file_uploader("Upload Daily Miloto Trips Data", type=["csv", "xlsx"])
+LIST_OF_TRUCKS = generate_fleet()
 
-@st.cache_data
-def load_data(file):
-    # Check file type and read accordingly
-    if file.name.endswith('.csv'):
-        df = pd.read_csv(file)
-    else:
-        df = pd.read_excel(file)
+# --- 3. LOGIC FUNCTIONS ---
+def save_trip_entry():
+    truck = st.session_state.log_truck
+    destination = st.session_state.log_dest
+    cargo = st.session_state.log_cargo
+    driver = st.session_state.log_driver
+    status = st.session_state.log_status
     
-    # Filter for Miloto Transport only
-    df = df[df['Transport Company'].str.contains('MILOTO', case=False, na=False)].copy()
-    
-    # ==========================================
-    # THE CORRECTION DICTIONARY (Fix typos here)
-    # ==========================================
-    corrections = {
-        "BCB1316": "MILOTO-83(MTL83)",
-        # To add future fixes, add them on a new line below like this:
-        # "WRONG TYPO": "CORRECT NAME",
+    if not truck:
+        st.error("⚠️ Please select a truck.")
+        return
+
+    new_record = {
+        "Date": datetime.today().strftime("%Y-%m-%d"),
+        "Truck": truck,
+        "Destination": destination,
+        "Cargo Weight": str(cargo),
+        "Driver": driver,
+        "Status": status,
+        "Logged By": st.session_state.get("role", "Unknown")
     }
     
-    # Apply the corrections to the Identity column
-    df['Identity'] = df['Identity'].replace(corrections)
-    # ==========================================
-    
-    # Exclude dedicated local trucks (30, 48, 107)
-    exclude_pattern = r'(MILOTO|MTL)-?(30|48|107)\b'
-    df = df[~df['Identity'].str.contains(exclude_pattern, regex=True, na=False)]
-    
-    # Format dates
-    df['DOT'] = pd.to_datetime(df['DOT'], format='%d-%m-%Y')
-    df = df.sort_values(by=['Identity', 'DOT'])
-    
-    return df
+    table.create(new_record)
+    st.toast("✅ Trip dispatched and saved to Airtable!")
 
-if uploaded_file is not None:
-    # Load the data
-    df = load_data(uploaded_file)
+def delete_last_row():
+    records = table.all(sort=["-createdTime"])
+    if records:
+        table.delete(records[0]["id"])
+        st.toast("🗑️ Last entry deleted!")
 
-    # ==========================================
-    # LOGIC: Calendar Days / Total Trips
-    # ==========================================
-    
-    # 1. Automatically find how many days into the month we are
-    max_date = df['DOT'].max()
-    total_calendar_days = max_date.day 
-    
-    # 2. Count total trips per truck
-    truck_stats = df.groupby('Identity').agg(
-        Total_Trips=('DOT', 'count')
-    ).reset_index()
+# --- 4. UI LAYOUT ---
+st.title("🚛 Logistics & Dispatch")
+st.divider()
 
-    # 3. Calculate Average Days per Trip (Calendar Days / Trips)
-    truck_stats['Avg_Days'] = total_calendar_days / truck_stats['Total_Trips']
+col1, col2 = st.columns(2)
+with col1:
+    st.selectbox("Select Truck", [""] + LIST_OF_TRUCKS, key="log_truck")
+    st.text_input("Destination / Route", key="log_dest")
+    st.text_input("Driver Name", key="log_driver")
+with col2:
+    st.text_input("Cargo Details (e.g., Cement Tons)", key="log_cargo")
+    st.selectbox("Trip Status", ["Dispatched", "In Transit", "Delivered", "Delayed"], key="log_status")
 
-    # 4. Calculate True Fleet Averages
-    fleet_avg_trips = truck_stats['Total_Trips'].mean()
-    fleet_avg_days = total_calendar_days / fleet_avg_trips
+st.button("💾 Submit Logistics Trip", use_container_width=True, on_click=save_trip_entry, type="primary")
 
-    # ==========================================
+# --- 5. SUBMITTED LOGS ---
+st.divider()
+st.subheader("📋 Active & Historical Trips")
 
-    # Top Level KPIs
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Month-to-Date Days", f"{total_calendar_days} Days")
-    col2.metric("Fleet Avg Turnaround", f"{fleet_avg_days:.2f} Days")
-    col3.metric("Fleet Avg Trips (MTD)", f"{fleet_avg_trips:.1f} Trips")
+live_records = table.all(sort=["-createdTime"])
 
-    st.divider()
-
-    # Live Leaderboard
-    st.subheader("🏆 Live Truck Leaderboard")
-    truck_stats['Performance vs Fleet'] = truck_stats['Avg_Days'] - fleet_avg_days
-    truck_stats = truck_stats.sort_values('Avg_Days', ascending=True).dropna()
-
-    st.dataframe(
-        truck_stats.style.format({"Avg_Days": "{:.2f}", "Performance vs Fleet": "{:.2f}"})
-        .background_gradient(subset=['Avg_Days'], cmap="RdYlGn_r"),
-        use_container_width=True
-    )
-
-    # Destination Breakdown Viewer
-    st.subheader("📍 Destination Breakdown per Truck")
-    selected_truck_routes = st.selectbox("Select a truck to view its routes:", truck_stats['Identity'].unique(), key="route_select")
-
-    if selected_truck_routes:
-        truck_data = df[df['Identity'] == selected_truck_routes]
-        dest_counts = truck_data['Destination'].value_counts().reset_index()
-        dest_counts.columns = ['Destination', 'Trips']
+if live_records:
+    flat_data = []
+    for r in live_records:
+        row = r.get("fields", {})
+        row["id"] = r["id"]
+        flat_data.append(row)
         
-        st.dataframe(dest_counts, hide_index=True, use_container_width=True)
+    df_history = pd.DataFrame(flat_data)
+    cols_to_show = ["Date", "Truck", "Destination", "Cargo Weight", "Driver", "Status", "Logged By", "id"]
+    existing_cols = [c for c in cols_to_show if c in df_history.columns]
+    
+    edited_df = st.data_editor(
+        df_history[existing_cols], 
+        use_container_width=True, 
+        num_rows="dynamic", 
+        hide_index=True,
+        column_config={"id": None}
+    )
+    
+    # Airtable Sync Logic for manual table deletions
+    if len(edited_df) < len(df_history):
+        deleted_ids = set(df_history["id"]) - set(edited_df["id"])
+        for del_id in deleted_ids:
+            table.delete(del_id)
+        st.toast("🗑️ Record permanently deleted from Airtable!")
+        st.rerun()
 
-    st.divider()
-
-    # Isolated Performance Tracker 
-    st.subheader("🎯 Individual Performance vs Fleet")
-    st.markdown("Isolate a truck to compare its performance against the fleet averages without the clutter.")
-
-    # Calculate cumulative trips for the background data
-    daily_trips = df.groupby(['DOT', 'Identity']).size().reset_index(name='Trips')
-    daily_trips['Cumulative_Trips'] = daily_trips.groupby('Identity')['Trips'].cumsum()
-
-    # Dropdown to select the specific truck to analyze
-    compare_truck = st.selectbox("Select Truck to Analyze:", sorted(df['Identity'].unique()), key="compare_truck_select")
-
-    if compare_truck:
-        col_chart1, col_chart2 = st.columns(2)
-
-        with col_chart1:
-            # --- Chart 1: Speed (Avg Days per Trip) ---
-            truck_avg = truck_stats[truck_stats['Identity'] == compare_truck]['Avg_Days'].values[0]
-            
-            # Create a simple comparison dataframe
-            speed_df = pd.DataFrame({
-                "Metric": [compare_truck, "Fleet Average"],
-                "Days": [truck_avg, fleet_avg_days]
-            })
-            
-            # Bar chart comparing the two numbers
-            fig_speed = px.bar(speed_df, x="Metric", y="Days", color="Metric",
-                               title="Average Turnaround Speed (Lower is Better)",
-                               color_discrete_sequence=["#FF4B4B", "#1f77b4"])
-            
-            # Add a horizontal line to easily see the fleet average across the truck's bar
-            fig_speed.add_hline(y=fleet_avg_days, line_dash="dot", line_color="white", opacity=0.5)
-            st.plotly_chart(fig_speed, use_container_width=True)
-
-        with col_chart2:
-            # --- Chart 2: Volume (Cumulative Trips over time) ---
-            truck_daily = daily_trips[daily_trips['Identity'] == compare_truck]
-            
-            # Line chart showing just the selected truck's progress
-            fig_vol = px.line(truck_daily, x='DOT', y='Cumulative_Trips', markers=True,
-                              title="Trips Completed This Month",
-                              color_discrete_sequence=["#2ecc71"])
-            
-            # Add the target line for the current Fleet MTD Average
-            fig_vol.add_hline(y=fleet_avg_trips, line_dash="dot", annotation_text="Current Fleet Average", line_color="#FF4B4B")
-            
-            # Lock the Y-axis based on the top performing truck
-            max_y = max(daily_trips['Cumulative_Trips'].max(), fleet_avg_trips) + 1
-            fig_vol.update_layout(yaxis_range=[0, max_y])
-            
-            st.plotly_chart(fig_vol, use_container_width=True)
+if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
+    delete_last_row()
+    st.rerun()
