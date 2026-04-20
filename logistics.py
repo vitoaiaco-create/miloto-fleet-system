@@ -41,14 +41,21 @@ def save_trip_entry():
         "Logged By": st.session_state.get("role", "Unknown")
     }
     
-    table.create(new_record)
-    st.toast("✅ Trip dispatched and saved to Airtable!")
+    try:
+        table.create(new_record)
+        st.toast("✅ Trip dispatched and saved!")
+    except Exception as e:
+        st.error(f"❌ Airtable Error: {e}")
 
 def delete_last_row():
-    records = table.all(sort=["-createdTime"])
-    if records:
-        table.delete(records[0]["id"])
-        st.toast("🗑️ Last entry deleted!")
+    try:
+        records = table.all()
+        if records:
+            records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
+            table.delete(records[0]["id"])
+            st.toast("🗑️ Last entry deleted!")
+    except Exception as e:
+        st.error(f"❌ Airtable Error: {e}")
 
 # --- 4. UI LAYOUT ---
 st.title("🚛 Logistics & Dispatch")
@@ -69,35 +76,39 @@ st.button("💾 Submit Logistics Trip", use_container_width=True, on_click=save_
 st.divider()
 st.subheader("📋 Active & Historical Trips")
 
-live_records = table.all(sort=["-createdTime"])
-
-if live_records:
-    flat_data = []
-    for r in live_records:
-        row = r.get("fields", {})
-        row["id"] = r["id"]
-        flat_data.append(row)
+try:
+    live_records = table.all()
+    if live_records:
+        live_records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
         
-    df_history = pd.DataFrame(flat_data)
-    cols_to_show = ["Date", "Truck", "Destination", "Cargo Weight", "Driver", "Status", "Logged By", "id"]
-    existing_cols = [c for c in cols_to_show if c in df_history.columns]
-    
-    edited_df = st.data_editor(
-        df_history[existing_cols], 
-        use_container_width=True, 
-        num_rows="dynamic", 
-        hide_index=True,
-        column_config={"id": None}
-    )
-    
-    # Airtable Sync Logic for manual table deletions
-    if len(edited_df) < len(df_history):
-        deleted_ids = set(df_history["id"]) - set(edited_df["id"])
-        for del_id in deleted_ids:
-            table.delete(del_id)
-        st.toast("🗑️ Record permanently deleted from Airtable!")
+        flat_data = []
+        for r in live_records:
+            row = r.get("fields", {})
+            row["id"] = r["id"]
+            flat_data.append(row)
+            
+        df_history = pd.DataFrame(flat_data)
+        cols_to_show = ["Date", "Truck", "Destination", "Cargo Weight", "Driver", "Status", "Logged By", "id"]
+        existing_cols = [c for c in cols_to_show if c in df_history.columns]
+        
+        edited_df = st.data_editor(
+            df_history[existing_cols], 
+            use_container_width=True, 
+            num_rows="dynamic", 
+            hide_index=True,
+            column_config={"id": None}
+        )
+        
+        if len(edited_df) < len(df_history):
+            deleted_ids = set(df_history["id"]) - set(edited_df["id"])
+            for del_id in deleted_ids:
+                table.delete(del_id)
+            st.toast("🗑️ Record deleted!")
+            st.rerun()
+
+    if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
+        delete_last_row()
         st.rerun()
 
-if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
-    delete_last_row()
-    st.rerun()
+except Exception as e:
+    st.error(f"❌ Cannot connect to Airtable. Ensure your table is named exactly 'Logistics Trips'. Error: {e}")
