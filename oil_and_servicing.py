@@ -39,14 +39,21 @@ def save_service_entry():
         "Logged By": st.session_state.get("role", "Unknown")
     }
     
-    table.create(new_record)
-    st.toast("✅ Service record saved to Airtable!")
+    try:
+        table.create(new_record)
+        st.toast("✅ Service record saved!")
+    except Exception as e:
+        st.error(f"❌ Airtable Error: {e}")
 
 def delete_last_row():
-    records = table.all(sort=["-createdTime"])
-    if records:
-        table.delete(records[0]["id"])
-        st.toast("🗑️ Last entry deleted!")
+    try:
+        records = table.all()
+        if records:
+            records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
+            table.delete(records[0]["id"])
+            st.toast("🗑️ Last entry deleted!")
+    except Exception as e:
+        st.error(f"❌ Airtable Error: {e}")
 
 # --- 4. UI LAYOUT ---
 st.title("🛢️ Oil & Servicing Log")
@@ -64,39 +71,73 @@ st.button("💾 Submit Service Record", use_container_width=True, on_click=save_
 
 # --- 5. SUBMITTED LOGS ---
 st.divider()
-st.subheader("📋 Historical Service Records")
+st.subheader("📋 Live Service Records")
 
-live_records = table.all(sort=["-createdTime"])
-
-if live_records:
-    # Extract data and keep the Airtable ID hidden for deletion logic
-    flat_data = []
-    for r in live_records:
-        row = r.get("fields", {})
-        row["id"] = r["id"]
-        flat_data.append(row)
+try:
+    live_records = table.all()
+    if live_records:
+        live_records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
         
-    df_history = pd.DataFrame(flat_data)
-    cols_to_show = ["Date", "Truck", "Service Type", "Odometer", "Notes", "Logged By", "id"]
-    existing_cols = [c for c in cols_to_show if c in df_history.columns]
-    
-    # Hide the 'id' column from the user
-    edited_df = st.data_editor(
-        df_history[existing_cols], 
-        use_container_width=True, 
-        num_rows="dynamic", 
-        hide_index=True,
-        column_config={"id": None}
-    )
-    
-    # Airtable Sync: If a row is deleted manually in the table
-    if len(edited_df) < len(df_history):
-        deleted_ids = set(df_history["id"]) - set(edited_df["id"])
-        for del_id in deleted_ids:
-            table.delete(del_id)
-        st.toast("🗑️ Record permanently deleted from Airtable!")
+        flat_data = []
+        for r in live_records:
+            row = r.get("fields", {})
+            row["id"] = r["id"]
+            flat_data.append(row)
+            
+        df_history = pd.DataFrame(flat_data)
+        cols_to_show = ["Date", "Truck", "Service Type", "Odometer", "Notes", "Logged By", "id"]
+        existing_cols = [c for c in cols_to_show if c in df_history.columns]
+        
+        edited_df = st.data_editor(
+            df_history[existing_cols], 
+            use_container_width=True, 
+            num_rows="dynamic", 
+            hide_index=True,
+            column_config={"id": None}
+        )
+        
+        if len(edited_df) < len(df_history):
+            deleted_ids = set(df_history["id"]) - set(edited_df["id"])
+            for del_id in deleted_ids:
+                table.delete(del_id)
+            st.toast("🗑️ Record deleted!")
+            st.rerun()
+
+    if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
+        delete_last_row()
         st.rerun()
 
-if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
-    delete_last_row()
-    st.rerun()
+except Exception as e:
+    st.error(f"❌ Cannot connect to Airtable. Ensure your table is named exactly 'Oil & Servicing'. Error: {e}")
+
+# --- 6. EXCEL UPLOAD & ANALYTICS ---
+st.divider()
+st.subheader("📈 Excel Data Upload & Analytics")
+uploaded_file = st.file_uploader("Upload your Excel file here", type=["xlsx", "xls"])
+
+if uploaded_file is not None:
+    try:
+        df_stats = pd.read_excel(uploaded_file)
+        st.success(f"✅ File loaded successfully! Found {len(df_stats)} records.")
+        
+        with st.expander("🔍 View Raw Excel Data"):
+            st.dataframe(df_stats, use_container_width=True)
+            
+        st.markdown("### 📊 Statistical Summary")
+        stat_col1, stat_col2 = st.columns(2)
+        
+        with stat_col1:
+            if "Service Type" in df_stats.columns:
+                st.write("**Count by Service Type:**")
+                st.dataframe(df_stats["Service Type"].value_counts(), use_container_width=True)
+            else:
+                st.warning("No 'Service Type' column found.")
+                
+        with stat_col2:
+            if "Truck" in df_stats.columns:
+                st.write("**Top 5 Trucks Serviced:**")
+                st.dataframe(df_stats["Truck"].value_counts().head(5), use_container_width=True)
+            else:
+                st.warning("No 'Truck' column found.")
+    except Exception as e:
+        st.error(f"❌ Could not read the file. Error: {e}")
