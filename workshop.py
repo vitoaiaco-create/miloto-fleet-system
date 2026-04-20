@@ -1,28 +1,27 @@
 import streamlit as st
 import pandas as pd
-import os
+from pyairtable import Api
 from datetime import datetime
 
-# --- 1. SETUP & CONFIGURATION ---
-DATA_FILE = "workshop_log.csv"
+# --- 1. AIRTABLE CONNECTION ---
+# This securely pulls the keys we just put in Streamlit Secrets
+api = Api(st.secrets["AIRTABLE_TOKEN"])
+table = api.table(st.secrets["AIRTABLE_BASE_ID"], "Workshop Logs")
 
+# --- 2. FLEET SETUP ---
 def generate_fleet():
     fleet = []
     excluded = {30, 48, 107}
     for i in range(1, 128):
-        if i in excluded:
-            continue
+        if i in excluded: continue
+            
         num_str = f"{i:02d}"
         fleet.append(f"MILOTO-{num_str}(MTL{num_str})")
     return fleet
 
 LIST_OF_TRUCKS = generate_fleet()
 
-if not os.path.exists(DATA_FILE):
-    df_empty = pd.DataFrame(columns=["Date", "Trucks", "Status", "Logged By"])
-    df_empty.to_csv(DATA_FILE, index=False)
-
-# --- 2. LOGIC FUNCTIONS ---
+# --- 3. LOGIC FUNCTIONS ---
 def save_entry():
     selected = st.session_state.truck_selector
     date_val = st.session_state.date_holder
@@ -32,28 +31,41 @@ def save_entry():
         st.error("⚠️ Select trucks first!")
         return
 
-    df = pd.read_csv(DATA_FILE)
     date_str = date_val.strftime("%Y-%m-%d")
+    logged_by = st.session_state.get("role", "User")
+    
+    # Pull all records to check for Morning/Evening overrides
+    records = table.all()
     
     for truck in selected:
-        mask = (df['Date'] == date_str) & (df['Trucks'] == truck)
-        if mask.any() and shift_type == "Evening (Final)":
-            df.loc[mask, 'Status'] = "Final"
-        else:
-            new_row = {"Date": date_str, "Trucks": truck, "Status": "Provisional" if "Morning" in shift_type else "Final", "Logged By": st.session_state.get("role", "User")}
-            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        # Search Airtable for an existing record for this truck today
+        existing_record_id = None
+        for r in records:
+            fields = r.get("fields", {})
+            if fields.get("Date") == date_str and fields.get("Trucks") == truck:
+                existing_record_id = r.get("id")
+                break
+                
+        status_val = "Provisional" if "Morning" in shift_type else "Final"
 
-    df.to_csv(DATA_FILE, index=False)
+        if existing_record_id and shift_type == "Evening (Final)":
+            # Override to Final
+            table.update(existing_record_id, {"Status": "Final", "Logged By": logged_by})
+        elif not existing_record_id:
+            # Create a brand new record in Airtable
+            table.create({"Date": date_str, "Trucks": truck, "Status": status_val, "Logged By": logged_by})
+
+    # Clear the box
     st.session_state.truck_selector = []
 
 def delete_last_row():
-    df = pd.read_csv(DATA_FILE)
-    if not df.empty:
-        df = df.iloc[:-1] # Removes the very last line submitted
-        df.to_csv(DATA_FILE, index=False)
+    # Grabs the most recently created record in Airtable and deletes it
+    records = table.all(sort=["-createdTime"])
+    if records:
+        table.delete(records[0]["id"])
         st.toast("🗑️ Last entry deleted!")
 
-# --- 3. UI LAYOUT ---
+# --- 4. UI LAYOUT ---
 st.title("🛠️ Workshop & Downtime Log")
 
 col1, col2 = st.columns(2)
@@ -63,26 +75,25 @@ with col2:
     st.selectbox("Shift", ["Morning (Provisional)", "Evening (Final)"], key="shift_holder")
 
 st.multiselect("Select Trucks", LIST_OF_TRUCKS, key="truck_selector")
-
-# Action Buttons
 st.button("💾 Submit Logs", use_container_width=True, on_click=save_entry, type="primary")
 
-# --- 4. THE MISTAKE FIX (DEDICATED BUTTONS) ---
+# --- 5. SUBMITTED LOGS ---
 st.divider()
 st.subheader("📋 Submitted Logs")
 
-if os.path.exists(DATA_FILE):
-    df_history = pd.read_csv(DATA_FILE)
-    
-    # Display the table (Editable for manual row deletion)
-    edited_df = st.data_editor(df_history, use_container_width=True, num_rows="dynamic", hide_index=True)
-    
-    # Check for changes in the table (manual deletion)
-    if len(edited_df) < len(df_history):
-        edited_df.to_csv(DATA_FILE, index=False)
-        st.rerun()
+# Pull live data directly from Airtable
+live_records = table.all(sort=["-createdTime"])
 
-    # Rapid Delete Button for immediate mistakes
-    if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
-        delete_last_row()
-        st.rerun()
+if live_records:
+    # Convert Airtable JSON format into a clean Pandas table for the screen
+    flat_data = [r["fields"] for r in live_records]
+    df_history = pd.DataFrame(flat_data)
+    
+    # Ensure columns display in the right order
+    cols_to_show = [col for col in ["Date", "Trucks", "Status", "Logged By"] if col in df_history.columns]
+    
+    st.dataframe(df_history[cols_to_show], use_container_width=True, hide_index=True)
+
+if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
+    delete_last_row()
+    st.rerun()
