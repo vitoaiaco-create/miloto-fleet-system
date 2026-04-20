@@ -4,7 +4,6 @@ from pyairtable import Api
 from datetime import datetime
 
 # --- 1. AIRTABLE CONNECTION ---
-# This securely pulls the keys we just put in Streamlit Secrets
 api = Api(st.secrets["AIRTABLE_TOKEN"])
 table = api.table(st.secrets["AIRTABLE_BASE_ID"], "Workshop Logs")
 
@@ -14,7 +13,6 @@ def generate_fleet():
     excluded = {30, 48, 107}
     for i in range(1, 128):
         if i in excluded: continue
-            
         num_str = f"{i:02d}"
         fleet.append(f"MILOTO-{num_str}(MTL{num_str})")
     return fleet
@@ -32,13 +30,11 @@ def save_entry():
         return
 
     date_str = date_val.strftime("%Y-%m-%d")
-    logged_by = st.session_state.get("role", "User")
+    logged_by = st.session_state.get("role", "Unknown")
     
-    # Pull all records to check for Morning/Evening overrides
     records = table.all()
     
     for truck in selected:
-        # Search Airtable for an existing record for this truck today
         existing_record_id = None
         for r in records:
             fields = r.get("fields", {})
@@ -49,19 +45,18 @@ def save_entry():
         status_val = "Provisional" if "Morning" in shift_type else "Final"
 
         if existing_record_id and shift_type == "Evening (Final)":
-            # Override to Final
             table.update(existing_record_id, {"Status": "Final", "Logged By": logged_by})
         elif not existing_record_id:
-            # Create a brand new record in Airtable
             table.create({"Date": date_str, "Trucks": truck, "Status": status_val, "Logged By": logged_by})
 
-    # Clear the box
     st.session_state.truck_selector = []
 
 def delete_last_row():
-    # Grabs the most recently created record in Airtable and deletes it
-    records = table.all(sort=["-createdTime"])
+    # Fetch all records without asking Airtable to sort them
+    records = table.all()
     if records:
+        # Let Python sort them by the hidden system timestamp so we delete the newest one
+        records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
         table.delete(records[0]["id"])
         st.toast("🗑️ Last entry deleted!")
 
@@ -81,18 +76,37 @@ st.button("💾 Submit Logs", use_container_width=True, on_click=save_entry, typ
 st.divider()
 st.subheader("📋 Submitted Logs")
 
-# Pull live data directly from Airtable
-live_records = table.all(sort=["-createdTime"])
+# Fetch records without the broken sort command
+live_records = table.all()
 
 if live_records:
-    # Convert Airtable JSON format into a clean Pandas table for the screen
-    flat_data = [r["fields"] for r in live_records]
+    # Sort records chronologically in Python so the newest is at the top
+    live_records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
+    
+    flat_data = []
+    for r in live_records:
+        row = r.get("fields", {})
+        row["id"] = r["id"]
+        flat_data.append(row)
+        
     df_history = pd.DataFrame(flat_data)
+    cols_to_show = ["Date", "Trucks", "Status", "Logged By", "id"]
+    existing_cols = [c for c in cols_to_show if c in df_history.columns]
     
-    # Ensure columns display in the right order
-    cols_to_show = [col for col in ["Date", "Trucks", "Status", "Logged By"] if col in df_history.columns]
+    edited_df = st.data_editor(
+        df_history[existing_cols], 
+        use_container_width=True, 
+        num_rows="dynamic", 
+        hide_index=True,
+        column_config={"id": None}
+    )
     
-    st.dataframe(df_history[cols_to_show], use_container_width=True, hide_index=True)
+    if len(edited_df) < len(df_history):
+        deleted_ids = set(df_history["id"]) - set(edited_df["id"])
+        for del_id in deleted_ids:
+            table.delete(del_id)
+        st.toast("🗑️ Record permanently deleted from Airtable!")
+        st.rerun()
 
 if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
     delete_last_row()
