@@ -1,13 +1,8 @@
 import streamlit as st
 import pandas as pd
 from pyairtable import Api
-from datetime import datetime
 
-# --- 1. AIRTABLE CONNECTION ---
-api = Api(st.secrets["AIRTABLE_TOKEN"])
-table = api.table(st.secrets["AIRTABLE_BASE_ID"], "Logistics Trips")
-
-# --- 2. FLEET SETUP ---
+# --- 1. FLEET SETUP ---
 def generate_fleet():
     fleet = []
     excluded = {30, 48, 107}
@@ -19,96 +14,125 @@ def generate_fleet():
 
 LIST_OF_TRUCKS = generate_fleet()
 
-# --- 3. LOGIC FUNCTIONS ---
-def save_trip_entry():
-    truck = st.session_state.log_truck
-    destination = st.session_state.log_dest
-    cargo = st.session_state.log_cargo
-    driver = st.session_state.log_driver
-    status = st.session_state.log_status
-    
-    if not truck:
-        st.error("⚠️ Please select a truck.")
-        return
-
-    new_record = {
-        "Date": datetime.today().strftime("%Y-%m-%d"),
-        "Truck": truck,
-        "Destination": destination,
-        "Cargo Weight": str(cargo),
-        "Driver": driver,
-        "Status": status,
-        "Logged By": st.session_state.get("role", "Unknown")
-    }
-    
+# --- 2. FETCH WORKSHOP LOGS (FROM AIRTABLE) ---
+@st.cache_data(ttl=60) # Caches the data for 60 seconds to keep the app fast
+def get_workshop_downtime():
     try:
-        table.create(new_record)
-        st.toast("✅ Trip dispatched and saved!")
+        api = Api(st.secrets["AIRTABLE_TOKEN"])
+        ws_table = api.table(st.secrets["AIRTABLE_BASE_ID"], "Workshop Logs")
+        records = ws_table.all()
+        
+        ws_data = []
+        for r in records:
+            fields = r.get("fields", {})
+            truck = fields.get("Trucks")
+            date_val = fields.get("Date")
+            if truck and date_val:
+                ws_data.append({"Truck": truck, "Date": date_val})
+                
+        if not ws_data:
+            return pd.DataFrame(columns=["Truck", "Workshop Days"])
+            
+        df_ws = pd.DataFrame(ws_data)
+        
+        # Count unique days each truck was logged in the workshop
+        ws_counts = df_ws.groupby("Truck")["Date"].nunique().reset_index()
+        ws_counts.columns = ["Truck", "Workshop Days"]
+        return ws_counts
     except Exception as e:
-        st.error(f"❌ Airtable Error: {e}")
+        st.error(f"⚠️ Could not fetch Workshop Logs from Airtable: {e}")
+        return pd.DataFrame(columns=["Truck", "Workshop Days"])
 
-def delete_last_row():
-    try:
-        records = table.all()
-        if records:
-            records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
-            table.delete(records[0]["id"])
-            st.toast("🗑️ Last entry deleted!")
-    except Exception as e:
-        st.error(f"❌ Airtable Error: {e}")
-
-# --- 4. UI LAYOUT ---
-st.title("🚛 Logistics & Dispatch")
+# --- 3. UI & FILE UPLOAD ---
+st.title("🚛 Logistics Trips Dashboard")
 st.divider()
+
+st.markdown("Upload the **Miloto Trips** Excel/CSV file to calculate fleet performance. This dashboard automatically syncs with your **Workshop Logs** to calculate net available days.")
 
 col1, col2 = st.columns(2)
 with col1:
-    st.selectbox("Select Truck", [""] + LIST_OF_TRUCKS, key="log_truck")
-    st.text_input("Destination / Route", key="log_dest")
-    st.text_input("Driver Name", key="log_driver")
+    uploaded_file = st.file_uploader("Upload Miloto Trips File (.xlsx or .csv)", type=["xlsx", "xls", "csv"])
 with col2:
-    st.text_input("Cargo Details (e.g., Cement Tons)", key="log_cargo")
-    st.selectbox("Trip Status", ["Dispatched", "In Transit", "Delivered", "Delayed"], key="log_status")
+    total_days_in_month = st.number_input("Total Days Available in Month", min_value=1, max_value=31, value=30)
 
-st.button("💾 Submit Logistics Trip", use_container_width=True, on_click=save_trip_entry, type="primary")
-
-# --- 5. SUBMITTED LOGS ---
-st.divider()
-st.subheader("📋 Active & Historical Trips")
-
-try:
-    live_records = table.all()
-    if live_records:
-        live_records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
-        
-        flat_data = []
-        for r in live_records:
-            row = r.get("fields", {})
-            row["id"] = r["id"]
-            flat_data.append(row)
+# --- 4. ANALYTICS LOGIC ---
+if uploaded_file is not None:
+    try:
+        # Read the file
+        if uploaded_file.name.endswith('.csv'):
+            df_raw = pd.read_csv(uploaded_file)
+        else:
+            df_raw = pd.read_excel(uploaded_file)
             
-        df_history = pd.DataFrame(flat_data)
-        cols_to_show = ["Date", "Truck", "Destination", "Cargo Weight", "Driver", "Status", "Logged By", "id"]
-        existing_cols = [c for c in cols_to_show if c in df_history.columns]
-        
-        edited_df = st.data_editor(
-            df_history[existing_cols], 
-            use_container_width=True, 
-            num_rows="dynamic", 
-            hide_index=True,
-            column_config={"id": None}
-        )
-        
-        if len(edited_df) < len(df_history):
-            deleted_ids = set(df_history["id"]) - set(edited_df["id"])
-            for del_id in deleted_ids:
-                table.delete(del_id)
-            st.toast("🗑️ Record deleted!")
-            st.rerun()
-
-    if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
-        delete_last_row()
-        st.rerun()
-
-except Exception as e:
-    st.error(f"❌ Cannot connect to Airtable. Ensure your table is named exactly 'Logistics Trips'. Error: {e}")
+        # Ensure the Identity column exists
+        if "Identity" not in df_raw.columns:
+            st.error("❌ The uploaded file must contain an 'Identity' column to count the trucks.")
+        else:
+            with st.spinner("Crunching data and syncing with Airtable Workshop Logs..."):
+                
+                # 1. Filter out externals, 30, 48, and 107
+                df_miloto = df_raw[df_raw["Identity"].isin(LIST_OF_TRUCKS)]
+                
+                # 2. Count trips per Miloto truck
+                trip_counts = df_miloto["Identity"].value_counts().reset_index()
+                trip_counts.columns = ["Truck", "Total Trips"]
+                
+                # 3. Pull Workshop Days from Airtable
+                df_workshop = get_workshop_downtime()
+                
+                # 4. Build the final Dashboard DataFrame (Ensure ALL valid trucks are listed)
+                df_dashboard = pd.DataFrame({"Truck": LIST_OF_TRUCKS})
+                
+                # Merge the trips and workshop days into the master list
+                df_dashboard = df_dashboard.merge(trip_counts, on="Truck", how="left").fillna(0)
+                df_dashboard = df_dashboard.merge(df_workshop, on="Truck", how="left").fillna(0)
+                
+                # Clean up numbers
+                df_dashboard["Total Trips"] = df_dashboard["Total Trips"].astype(int)
+                df_dashboard["Workshop Days"] = df_dashboard["Workshop Days"].astype(int)
+                
+                # 5. Calculations
+                df_dashboard["Total Days Available"] = total_days_in_month
+                
+                # Net Available Days = Total - Workshop (preventing negative numbers)
+                df_dashboard["Net Available Days"] = df_dashboard["Total Days Available"] - df_dashboard["Workshop Days"]
+                df_dashboard["Net Available Days"] = df_dashboard["Net Available Days"].apply(lambda x: max(x, 0))
+                
+                # Average Days per Trip
+                df_dashboard["Avg Days per Trip"] = df_dashboard.apply(
+                    lambda row: round(row["Net Available Days"] / row["Total Trips"], 2) if row["Total Trips"] > 0 else 0.0,
+                    axis=1
+                )
+                
+                # --- 6. DISPLAY DASHBOARD ---
+                st.success("✅ Dashboard Generated Successfully!")
+                
+                # Top Level Summary Metrics
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Total Miloto Trips", df_dashboard["Total Trips"].sum())
+                m2.metric("Active Trucks (1+ Trip)", len(df_dashboard[df_dashboard["Total Trips"] > 0]))
+                m3.metric("Total Workshop Days", df_dashboard["Workshop Days"].sum())
+                
+                # Calculate Fleet Average safely
+                total_net_days = df_dashboard["Net Available Days"].sum()
+                total_fleet_trips = df_dashboard["Total Trips"].sum()
+                fleet_avg = round(total_net_days / total_fleet_trips, 2) if total_fleet_trips > 0 else 0.0
+                m4.metric("Fleet Avg Days/Trip", fleet_avg)
+                
+                st.divider()
+                
+                # Display the full table
+                st.subheader("📊 Individual Truck Performance")
+                st.dataframe(df_dashboard, use_container_width=True, hide_index=True)
+                
+                # Provide a quick download button for the analytics
+                csv = df_dashboard.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="⬇️ Download Dashboard as CSV",
+                    data=csv,
+                    file_name=f"logistics_dashboard.csv",
+                    mime="text/csv",
+                )
+                
+    except Exception as e:
+        st.error(f"❌ Could not process the file. Error: {e}")
