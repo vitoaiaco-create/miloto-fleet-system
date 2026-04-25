@@ -28,19 +28,29 @@ BANKS = [
     "5. Completed Interventions"
 ]
 
-# --- 4. DATA FETCHING ---
+# --- 4. DATA FETCHING (FIXED: DEFENSIVE COLUMNS) ---
 def fetch_pipeline():
     try:
         records = table.all()
         if not records:
             return pd.DataFrame()
+            
         records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
         flat_data = []
         for r in records:
             row = r.get("fields", {})
             row["id"] = r["id"]
             flat_data.append(row)
-        return pd.DataFrame(flat_data)
+            
+        df = pd.DataFrame(flat_data)
+        
+        # Guarantee critical columns exist even if Airtable rows are blank/legacy
+        expected_cols = ["Date", "Truck", "Status", "Notes", "Logged By"]
+        for col in expected_cols:
+            if col not in df.columns:
+                df[col] = ""
+                
+        return df
     except Exception as e:
         st.error(f"❌ Airtable Error: {e}")
         return pd.DataFrame()
@@ -79,7 +89,7 @@ def advance_pipeline():
     try:
         update_data = {
             "Status": new_status, 
-            "Date": datetime.today().strftime("%Y-%m-%d"), # Updates date to when it moved banks
+            "Date": datetime.today().strftime("%Y-%m-%d"),
             "Logged By": st.session_state.get("role", "Unknown")
         }
         if action_notes:
@@ -99,16 +109,14 @@ st.subheader("📥 1. Log New Sample Requirement")
 col1, col2 = st.columns(2)
 with col1:
     st.selectbox("Select Truck", [""] + LIST_OF_TRUCKS, key="new_truck")
-    # Only allow entering at Bank 1 or 2
     st.selectbox("Initial Status", BANKS[:2], key="new_status")
 with col2:
     st.text_input("Initial Notes (Optional)", key="new_notes")
-    st.write("") # Spacing
+    st.write("") 
     st.button("💾 Enter into Pipeline", use_container_width=True, on_click=log_new_sample, type="primary")
 
 st.divider()
 
-# Fetch data for the rest of the app
 df_pipeline = fetch_pipeline()
 
 # --- PIPELINE MANAGER: MOVE TRUCKS ---
@@ -116,11 +124,9 @@ st.subheader("🔄 2. Advance Truck in Pipeline")
 st.caption("Update a truck's status when lab results arrive or interventions are completed.")
 
 if not df_pipeline.empty:
-    # Filter only active trucks (not in Bank 5)
     active_df = df_pipeline[df_pipeline["Status"] != BANKS[4]]
     
     if not active_df.empty:
-        # Create a dictionary to map Airtable ID to a readable label: "MILOTO-01 - 3. Sent to Lab"
         record_options = {row["id"]: f"{row['Truck']} ➔ {row['Status']}" for _, row in active_df.iterrows()}
         
         m_col1, m_col2 = st.columns(2)
@@ -147,7 +153,6 @@ st.divider()
 st.subheader("📊 3. Pipeline Dashboard (The 5 Banks)")
 
 if not df_pipeline.empty:
-    # Create the visual tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "1️⃣ Due for Collection", 
         "2️⃣ Pending Dispatch", 
@@ -159,7 +164,6 @@ if not df_pipeline.empty:
     tabs = [tab1, tab2, tab3, tab4, tab5]
     cols_to_show = ["Date", "Truck", "Notes", "Logged By"]
     
-    # Loop through the 5 banks and place the right trucks into the right tabs
     for i, bank_name in enumerate(BANKS):
         with tabs[i]:
             df_bank = df_pipeline[df_pipeline["Status"] == bank_name]
