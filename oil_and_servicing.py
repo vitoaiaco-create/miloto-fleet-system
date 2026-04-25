@@ -10,7 +10,6 @@ table = api.table(st.secrets["AIRTABLE_BASE_ID"], "Oil & Servicing")
 # --- 2. FLEET SETUP (ALL 127 INCLUDED) ---
 def generate_fleet():
     fleet = []
-    # No exclusions for Oil & Servicing!
     for i in range(1, 128):
         num_str = f"{i:02d}"
         fleet.append(f"MILOTO-{num_str}(MTL{num_str})")
@@ -105,27 +104,43 @@ def delete_last_row():
 def process_analytics(df_oil, df_mileage, df_samples):
     results = []
     
-    # Clean Mileage Data: Assume columns are dates and rows are trucks
-    # Find the current max KM for each truck by finding the max value in the row
-    # This is a simplified robust approach assuming data is somewhat structured
-    
+    # Extract Dates array from Mileage File (Messy Excel format handling)
+    dates_array = []
+    for col in df_mileage.columns:
+        dates_array.append(str(col))
+    if not any("202" in d for d in dates_array):
+        for i in range(min(5, len(df_mileage))):
+            row_vals = df_mileage.iloc[i].astype(str).tolist()
+            if any("202" in val for val in row_vals):
+                dates_array = row_vals
+                break
+                
     for truck in LIST_OF_TRUCKS:
-        # Extract MTL number (e.g. "MTL01")
-        mtl_code = truck.split("(")[1].replace(")", "")
+        mtl_code = truck.split("(")[1].replace(")", "") # e.g. MTL01
         
-        # 1. Get Latest KM and Historical Dates from Mileage file
-        # We look for the row containing MTLXX
+        # 1. Get Mileage History & Latest KM
         truck_row = df_mileage[df_mileage.apply(lambda r: r.astype(str).str.contains(mtl_code).any(), axis=1)]
         latest_km = 0
-        if not truck_row.empty:
-            # Find the max numeric value in that row (assuming the highest number is the latest KM)
-            numeric_vals = pd.to_numeric(truck_row.iloc[0], errors='coerce').dropna()
-            if not numeric_vals.empty:
-                latest_km = numeric_vals.max()
+        truck_km_history = {}
         
+        if not truck_row.empty:
+            # Extract valid numbers for latest KM
+            row_data = truck_row.iloc[0].astype(str).str.replace(",", "")
+            numeric_vals = pd.to_numeric(row_data, errors='coerce').dropna()
+            latest_km = numeric_vals.max() if not numeric_vals.empty else 0
+            
+            # Build precise mapping of Date -> KM
+            for idx, val in enumerate(row_data):
+                if idx < len(dates_array):
+                    d_str = str(dates_array[idx]).strip()
+                    if "202" in d_str:
+                        km_val = pd.to_numeric(val, errors='coerce')
+                        if pd.notna(km_val):
+                            truck_km_history[d_str] = km_val
+                            
         # 2. Get Last Sample KM (Clock B)
         sample_km = 0
-        sample_row = df_samples[df_samples.iloc[:, 0].astype(str).str.contains(mtl_code)]
+        sample_row = df_samples[df_samples.iloc[:, 0].astype(str).str.contains(mtl_code, na=False)]
         if not sample_row.empty:
             sample_km = pd.to_numeric(sample_row.iloc[0, 1], errors='coerce')
             if pd.isna(sample_km): sample_km = 0
@@ -137,29 +152,60 @@ def process_analytics(df_oil, df_mileage, df_samples):
         for _, row in truck_oil.iterrows():
             mat = str(row.get("Material Name", ""))
             qty = pd.to_numeric(row.get("Quantity", 0), errors='coerce')
+            outward_date_raw = str(row.get("Outward Date", "")).strip()
             
             is_full = False
             if "15W40" in mat and qty >= 40: is_full = True
             elif "80W90" in mat and qty >= 20: is_full = True
             elif "85W140" in mat and qty in [22, 26, 48]: is_full = True
             
-            if is_full:
-                # In a full system, we would match row["Outward Date"] to the mileage file date.
-                # For safety in this script, if we found a full replenishment, we assume it's the most recent 
-                # trigger unless sample_km is higher. (A robust date matcher requires exact datetime formatting).
-                # To keep it simple and avoid crashes, we check if the max KM around that date is higher.
-                pass 
-                
+            # THIS IS THE FIXED SECTION: Mapping Date to KM
+            if is_full and outward_date_raw:
+                try:
+                    # Convert DD-MM-YYYY to Datetime
+                    parsed_date = pd.to_datetime(outward_date_raw, format="%d-%m-%Y", errors="coerce")
+                    if pd.isna(parsed_date):
+                        parsed_date = pd.to_datetime(outward_date_raw, errors="coerce")
+                        
+                    if pd.notna(parsed_date):
+                        target_d_str = parsed_date.strftime("%Y-%m-%d")
+                        found_km = 0
+                        
+                        # Perfect match
+                        if target_d_str in truck_km_history:
+                            found_km = truck_km_history[target_d_str]
+                        else:
+                            # Nearest date fallback if exact date is missing (e.g. weekends)
+                            history_dates = []
+                            for d_str, km in truck_km_history.items():
+                                try:
+                                    dt = pd.to_datetime(d_str, errors="coerce")
+                                    if pd.notna(dt): history_dates.append((dt, km))
+                                except: pass
+                                
+                            if history_dates:
+                                closest = min(history_dates, key=lambda x: abs((x[0] - parsed_date).days))
+                                found_km = closest[1]
+                                
+                        # Update replenish_km if this event is higher (more recent)
+                        if found_km > replenish_km:
+                            replenish_km = found_km
+                except Exception:
+                    pass
+                    
         # The ultimate starting KM is whichever event happened LAST (highest KM)
         starting_km = max(sample_km, replenish_km)
         
         running_km = latest_km - starting_km
         if running_km < 0: running_km = 0 # Failsafe
         
-        status = "🟢 Healthy"
-        if running_km >= 12000: status = "🔴 Overdue"
-        elif running_km >= 10000: status = "🟡 Due Soon"
-        
+        # Determine Health Status
+        status = "⚪ No Baseline Data"
+        if starting_km > 0: # Ensure we don't flag brand new trucks without records as Overdue
+            if running_km >= 12000: status = "🔴 Overdue"
+            elif running_km >= 10000: status = "🟡 Due Soon"
+            else: status = "🟢 Healthy"
+            
         results.append({
             "Truck": truck,
             "Latest Odo": latest_km,
