@@ -105,17 +105,13 @@ def delete_last_row():
 def process_analytics(df_oil, df_mileage, df_samples):
     results = []
     
-    # 1. Extract Dates array from Mileage File securely using REGEX
-    dates_array = []
-    for col in df_mileage.columns:
-        dates_array.append(str(col))
-        
+    # 1. Extract Dates array from Mileage File securely
+    dates_array = [str(col) for col in df_mileage.columns]
     has_real_dates = any(re.search(r'202\d-', d) for d in dates_array)
     
     if not has_real_dates:
-        # Scan the first 5 rows to find the true dates header
         for i in range(min(5, len(df_mileage))):
-            row_vals = df_mileage.iloc[i].astype(str).tolist()
+            row_vals = [str(x) for x in df_mileage.iloc[i]]
             if any(re.search(r'202\d-', val) for val in row_vals):
                 dates_array = row_vals
                 break
@@ -123,74 +119,102 @@ def process_analytics(df_oil, df_mileage, df_samples):
     for truck in LIST_OF_TRUCKS:
         mtl_code = truck.split("(")[1].replace(")", "") # e.g. MTL01
         
-        # 2. Get Mileage History & Latest KM
-        truck_row = df_mileage[df_mileage.apply(lambda r: r.astype(str).str.contains(mtl_code).any(), axis=1)]
+        # 2. Get Mileage History & Latest KM (Bulletproof Pure Python Search)
+        mask_mileage = df_mileage.apply(lambda r: any(mtl_code in str(x) for x in r), axis=1)
+        truck_row = df_mileage[mask_mileage]
+        
         latest_km = 0
         truck_km_history = {}
         
         if not truck_row.empty:
-            row_data = truck_row.iloc[0].astype(str).str.replace(",", "")
-            numeric_vals = pd.to_numeric(row_data, errors='coerce').dropna()
-            latest_km = numeric_vals.max() if not numeric_vals.empty else 0
+            # Safely strip commas and convert to float
+            row_data = [str(x).replace(",", "").strip() for x in truck_row.iloc[0]]
             
+            numeric_vals = []
+            for val in row_data:
+                try:
+                    num = float(val)
+                    if pd.notna(num): numeric_vals.append(num)
+                except:
+                    pass
+                    
+            latest_km = max(numeric_vals) if numeric_vals else 0
+            
+            # Map valid numbers to their corresponding dates
             for idx, val in enumerate(row_data):
                 if idx < len(dates_array):
                     d_str = str(dates_array[idx]).strip()
                     if re.search(r'202\d-', d_str):
-                        km_val = pd.to_numeric(val, errors='coerce')
-                        if pd.notna(km_val):
-                            truck_km_history[d_str] = km_val
+                        try:
+                            km_val = float(val)
+                            if pd.notna(km_val): 
+                                truck_km_history[d_str] = km_val
+                        except:
+                            pass
                             
-        # 3. Get Last Sample KM (Clock B)
+        # 3. Get Last Sample KM (Clock B) - Bulletproof Search
         sample_km = 0
-        sample_row = df_samples[df_samples.iloc[:, 0].astype(str).str.contains(mtl_code, na=False)]
-        if not sample_row.empty:
-            sample_km = pd.to_numeric(sample_row.iloc[0, 1], errors='coerce')
-            if pd.isna(sample_km): sample_km = 0
-            
-        # 4. Check for Full Replenishment (Clock A)
-        replenish_km = 0
-        truck_oil = df_oil[df_oil["Identity No"].astype(str).str.contains(mtl_code, na=False)]
+        mask_samples = df_samples.iloc[:, 0].apply(lambda x: mtl_code in str(x))
+        sample_row = df_samples[mask_samples]
         
-        for _, row in truck_oil.iterrows():
-            mat = str(row.get("Material Name", ""))
-            qty = pd.to_numeric(row.get("Quantity", 0), errors='coerce')
-            outward_date_raw = str(row.get("Outward Date", "")).strip()
+        if not sample_row.empty:
+            try:
+                sample_km = float(sample_row.iloc[0, 1])
+                if pd.isna(sample_km): sample_km = 0
+            except:
+                sample_km = 0
             
-            is_full = False
-            if "15W40" in mat and qty >= 40: is_full = True
-            elif "80W90" in mat and qty >= 20: is_full = True
-            elif "85W140" in mat and qty in [22, 26, 48]: is_full = True
+        # 4. Check for Full Replenishment (Clock A) - Bulletproof Search
+        replenish_km = 0
+        
+        # Only process if 'Identity No' column exists
+        if "Identity No" in df_oil.columns:
+            mask_oil = df_oil["Identity No"].apply(lambda x: mtl_code in str(x))
+            truck_oil = df_oil[mask_oil]
             
-            if is_full and outward_date_raw:
+            for _, row in truck_oil.iterrows():
+                mat = str(row.get("Material Name", ""))
                 try:
-                    parsed_date = pd.to_datetime(outward_date_raw, format="%d-%m-%Y", errors="coerce")
-                    if pd.isna(parsed_date):
-                        parsed_date = pd.to_datetime(outward_date_raw, errors="coerce")
-                        
-                    if pd.notna(parsed_date):
-                        target_d_str = parsed_date.strftime("%Y-%m-%d")
-                        found_km = 0
-                        
-                        if target_d_str in truck_km_history:
-                            found_km = truck_km_history[target_d_str]
-                        else:
-                            history_dates = []
-                            for d_str, km in truck_km_history.items():
-                                try:
-                                    dt = pd.to_datetime(d_str, errors="coerce")
-                                    if pd.notna(dt): history_dates.append((dt, km))
-                                except: pass
-                                
-                            if history_dates:
-                                closest = min(history_dates, key=lambda x: abs((x[0] - parsed_date).days))
-                                found_km = closest[1]
-                                
-                        if found_km > replenish_km:
-                            replenish_km = found_km
-                except Exception:
-                    pass
+                    qty = float(row.get("Quantity", 0))
+                except:
+                    qty = 0
                     
+                outward_date_raw = str(row.get("Outward Date", "")).strip()
+                
+                is_full = False
+                if "15W40" in mat and qty >= 40: is_full = True
+                elif "80W90" in mat and qty >= 20: is_full = True
+                elif "85W140" in mat and qty in [22, 26, 48]: is_full = True
+                
+                if is_full and outward_date_raw and outward_date_raw.lower() != 'nan':
+                    try:
+                        parsed_date = pd.to_datetime(outward_date_raw, format="%d-%m-%Y", errors="coerce")
+                        if pd.isna(parsed_date):
+                            parsed_date = pd.to_datetime(outward_date_raw, errors="coerce")
+                            
+                        if pd.notna(parsed_date):
+                            target_d_str = parsed_date.strftime("%Y-%m-%d")
+                            found_km = 0
+                            
+                            if target_d_str in truck_km_history:
+                                found_km = truck_km_history[target_d_str]
+                            else:
+                                history_dates = []
+                                for d_str, km in truck_km_history.items():
+                                    try:
+                                        dt = pd.to_datetime(d_str, errors="coerce")
+                                        if pd.notna(dt): history_dates.append((dt, km))
+                                    except: pass
+                                    
+                                if history_dates:
+                                    closest = min(history_dates, key=lambda x: abs((x[0] - parsed_date).days))
+                                    found_km = closest[1]
+                                    
+                            if found_km > replenish_km:
+                                replenish_km = found_km
+                    except Exception:
+                        pass
+                        
         # 5. Final Calculation
         starting_km = max(sample_km, replenish_km)
         
@@ -205,9 +229,9 @@ def process_analytics(df_oil, df_mileage, df_samples):
             
         results.append({
             "Truck": truck,
-            "Latest Odo": latest_km,
-            "Starting KM": starting_km,
-            "Running KM": running_km,
+            "Latest Odo": int(latest_km),
+            "Starting KM": int(starting_km),
+            "Running KM": int(running_km),
             "Health": status
         })
         
