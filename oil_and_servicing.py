@@ -28,7 +28,7 @@ BANKS = [
     "5. Completed Interventions"
 ]
 
-# --- 4. DATA FETCHING (FIXED: DEFENSIVE COLUMNS) ---
+# --- 4. DATA FETCHING (WITH DEFENSIVE COLUMNS) ---
 def fetch_pipeline():
     try:
         records = table.all()
@@ -44,7 +44,7 @@ def fetch_pipeline():
             
         df = pd.DataFrame(flat_data)
         
-        # Guarantee critical columns exist even if Airtable rows are blank/legacy
+        # Guarantee critical columns exist to prevent KeyError
         expected_cols = ["Date", "Truck", "Status", "Notes", "Logged By"]
         for col in expected_cols:
             if col not in df.columns:
@@ -57,23 +57,29 @@ def fetch_pipeline():
 
 # --- 5. LOGIC FUNCTIONS ---
 def log_new_sample():
-    truck = st.session_state.new_truck
+    # Now expects a list of trucks from multiselect
+    selected_trucks = st.session_state.new_trucks 
     status = st.session_state.new_status
     notes = st.session_state.new_notes
     
-    if not truck:
-        st.error("⚠️ Please select a truck.")
+    if not selected_trucks:
+        st.error("⚠️ Please select at least one truck.")
         return
 
     try:
-        table.create({
-            "Date": datetime.today().strftime("%Y-%m-%d"),
-            "Truck": truck,
-            "Status": status,
-            "Notes": notes,
-            "Logged By": st.session_state.get("role", "Unknown")
-        })
-        st.toast("✅ Added to oil analysis pipeline!")
+        # Loop through and create a record for every selected truck
+        for truck in selected_trucks:
+            table.create({
+                "Date": datetime.today().strftime("%Y-%m-%d"),
+                "Truck": truck,
+                "Status": status,
+                "Notes": notes,
+                "Logged By": st.session_state.get("role", "Unknown")
+            })
+            
+        # Clear the multiselect box after successful entry
+        st.session_state.new_trucks = []
+        st.toast(f"✅ {len(selected_trucks)} truck(s) added to pipeline!")
     except Exception as e:
         st.error(f"❌ Could not create record: {e}")
 
@@ -100,15 +106,26 @@ def advance_pipeline():
     except Exception as e:
         st.error(f"❌ Update failed: {e}")
 
+def delete_last_row():
+    try:
+        records = table.all()
+        if records:
+            records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
+            table.delete(records[0]["id"])
+            st.toast("🗑️ Last entry deleted!")
+    except Exception as e:
+        st.error(f"❌ Airtable Error: {e}")
+
 # --- 6. UI LAYOUT ---
 st.title("🛢️ Condition-Based Oil Analysis Pipeline")
 st.divider()
 
-# --- ENTRY POINT: LOG NEW SAMPLE ---
+# --- ENTRY POINT: LOG NEW SAMPLE (BULK SELECT) ---
 st.subheader("📥 1. Log New Sample Requirement")
 col1, col2 = st.columns(2)
 with col1:
-    st.selectbox("Select Truck", [""] + LIST_OF_TRUCKS, key="new_truck")
+    # Upgraded to Multiselect
+    st.multiselect("Select Trucks (Bulk Entry)", LIST_OF_TRUCKS, key="new_trucks")
     st.selectbox("Initial Status", BANKS[:2], key="new_status")
 with col2:
     st.text_input("Initial Notes (Optional)", key="new_notes")
@@ -149,8 +166,9 @@ else:
 
 st.divider()
 
-# --- THE 5 BANKS DASHBOARD ---
+# --- THE 5 BANKS DASHBOARD (WITH SELECT & DELETE) ---
 st.subheader("📊 3. Pipeline Dashboard (The 5 Banks)")
+st.caption("To fix mistakes: check the box next to a log in any tab to select it for deletion.")
 
 if not df_pipeline.empty:
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -162,13 +180,45 @@ if not df_pipeline.empty:
     ])
     
     tabs = [tab1, tab2, tab3, tab4, tab5]
-    cols_to_show = ["Date", "Truck", "Notes", "Logged By"]
+    cols_to_show = ["Select", "Date", "Truck", "Notes", "Logged By", "id"]
     
     for i, bank_name in enumerate(BANKS):
         with tabs[i]:
-            df_bank = df_pipeline[df_pipeline["Status"] == bank_name]
+            df_bank = df_pipeline[df_pipeline["Status"] == bank_name].copy()
+            
             if not df_bank.empty:
+                # Insert Checkbox Column
+                df_bank.insert(0, "Select", False)
                 existing_cols = [c for c in cols_to_show if c in df_bank.columns]
-                st.dataframe(df_bank[existing_cols], use_container_width=True, hide_index=True)
+                
+                # Editable DataFrame for Deletion
+                edited_df = st.data_editor(
+                    df_bank[existing_cols], 
+                    use_container_width=True, 
+                    hide_index=True,
+                    key=f"editor_{i}", # Unique key for each tab
+                    column_config={
+                        "id": None, 
+                        "Select": st.column_config.CheckboxColumn("Select", default=False)
+                    },
+                    disabled=["Date", "Truck", "Notes", "Logged By"] # Prevent accidental text edits
+                )
+                
+                # Deletion Logic
+                selected_ids = edited_df[edited_df["Select"] == True]["id"].tolist()
+                
+                if len(selected_ids) > 0:
+                    if st.button(f"🗑️ Delete {len(selected_ids)} Selected Log(s)", key=f"del_btn_{i}", type="primary"):
+                        for del_id in selected_ids:
+                            table.delete(del_id)
+                        st.success("✅ Log(s) permanently deleted!")
+                        st.rerun()
             else:
                 st.write(f"No trucks currently in *{bank_name}*.")
+
+# Global Undo Button
+st.write("")
+st.write("")
+if st.button("⬅️ Undo/Delete Last Entry Globally", use_container_width=True):
+    delete_last_row()
+    st.rerun()
