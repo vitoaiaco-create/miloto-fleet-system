@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from pyairtable import Api
 from datetime import datetime
+import re
 
 # --- 1. AIRTABLE CONNECTION ---
 api = Api(st.secrets["AIRTABLE_TOKEN"])
@@ -104,48 +105,50 @@ def delete_last_row():
 def process_analytics(df_oil, df_mileage, df_samples):
     results = []
     
-    # Extract Dates array from Mileage File (Messy Excel format handling)
+    # 1. Extract Dates array from Mileage File securely using REGEX
     dates_array = []
     for col in df_mileage.columns:
         dates_array.append(str(col))
-    if not any("202" in d for d in dates_array):
+        
+    has_real_dates = any(re.search(r'202\d-', d) for d in dates_array)
+    
+    if not has_real_dates:
+        # Scan the first 5 rows to find the true dates header
         for i in range(min(5, len(df_mileage))):
             row_vals = df_mileage.iloc[i].astype(str).tolist()
-            if any("202" in val for val in row_vals):
+            if any(re.search(r'202\d-', val) for val in row_vals):
                 dates_array = row_vals
                 break
                 
     for truck in LIST_OF_TRUCKS:
         mtl_code = truck.split("(")[1].replace(")", "") # e.g. MTL01
         
-        # 1. Get Mileage History & Latest KM
+        # 2. Get Mileage History & Latest KM
         truck_row = df_mileage[df_mileage.apply(lambda r: r.astype(str).str.contains(mtl_code).any(), axis=1)]
         latest_km = 0
         truck_km_history = {}
         
         if not truck_row.empty:
-            # Extract valid numbers for latest KM
             row_data = truck_row.iloc[0].astype(str).str.replace(",", "")
             numeric_vals = pd.to_numeric(row_data, errors='coerce').dropna()
             latest_km = numeric_vals.max() if not numeric_vals.empty else 0
             
-            # Build precise mapping of Date -> KM
             for idx, val in enumerate(row_data):
                 if idx < len(dates_array):
                     d_str = str(dates_array[idx]).strip()
-                    if "202" in d_str:
+                    if re.search(r'202\d-', d_str):
                         km_val = pd.to_numeric(val, errors='coerce')
                         if pd.notna(km_val):
                             truck_km_history[d_str] = km_val
                             
-        # 2. Get Last Sample KM (Clock B)
+        # 3. Get Last Sample KM (Clock B)
         sample_km = 0
         sample_row = df_samples[df_samples.iloc[:, 0].astype(str).str.contains(mtl_code, na=False)]
         if not sample_row.empty:
             sample_km = pd.to_numeric(sample_row.iloc[0, 1], errors='coerce')
             if pd.isna(sample_km): sample_km = 0
             
-        # 3. Check for Full Replenishment (Clock A)
+        # 4. Check for Full Replenishment (Clock A)
         replenish_km = 0
         truck_oil = df_oil[df_oil["Identity No"].astype(str).str.contains(mtl_code, na=False)]
         
@@ -159,10 +162,8 @@ def process_analytics(df_oil, df_mileage, df_samples):
             elif "80W90" in mat and qty >= 20: is_full = True
             elif "85W140" in mat and qty in [22, 26, 48]: is_full = True
             
-            # THIS IS THE FIXED SECTION: Mapping Date to KM
             if is_full and outward_date_raw:
                 try:
-                    # Convert DD-MM-YYYY to Datetime
                     parsed_date = pd.to_datetime(outward_date_raw, format="%d-%m-%Y", errors="coerce")
                     if pd.isna(parsed_date):
                         parsed_date = pd.to_datetime(outward_date_raw, errors="coerce")
@@ -171,11 +172,9 @@ def process_analytics(df_oil, df_mileage, df_samples):
                         target_d_str = parsed_date.strftime("%Y-%m-%d")
                         found_km = 0
                         
-                        # Perfect match
                         if target_d_str in truck_km_history:
                             found_km = truck_km_history[target_d_str]
                         else:
-                            # Nearest date fallback if exact date is missing (e.g. weekends)
                             history_dates = []
                             for d_str, km in truck_km_history.items():
                                 try:
@@ -187,21 +186,19 @@ def process_analytics(df_oil, df_mileage, df_samples):
                                 closest = min(history_dates, key=lambda x: abs((x[0] - parsed_date).days))
                                 found_km = closest[1]
                                 
-                        # Update replenish_km if this event is higher (more recent)
                         if found_km > replenish_km:
                             replenish_km = found_km
                 except Exception:
                     pass
                     
-        # The ultimate starting KM is whichever event happened LAST (highest KM)
+        # 5. Final Calculation
         starting_km = max(sample_km, replenish_km)
         
         running_km = latest_km - starting_km
-        if running_km < 0: running_km = 0 # Failsafe
+        if running_km < 0: running_km = 0 
         
-        # Determine Health Status
         status = "⚪ No Baseline Data"
-        if starting_km > 0: # Ensure we don't flag brand new trucks without records as Overdue
+        if starting_km > 0: 
             if running_km >= 12000: status = "🔴 Overdue"
             elif running_km >= 10000: status = "🟡 Due Soon"
             else: status = "🟢 Healthy"
