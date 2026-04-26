@@ -91,18 +91,21 @@ def advance_pipeline():
     record_id = st.session_state.upd_record
     new_status = st.session_state.upd_status
     action_notes = st.session_state.upd_notes
+    
+    # Check if they want to record a new sample, and grab the backdated date
     record_new_sample = st.session_state.get("upd_new_sample", False)
+    sample_date_val = st.session_state.get("upd_sample_date", datetime.today())
+    target_d_str = sample_date_val.strftime("%Y-%m-%d")
     
     if not record_id:
         st.error("⚠️ Select a truck from the active pipeline to update.")
         return
         
     try:
-        # Extract the specific truck name from the pipeline ID to update its profile
         df_pipe = fetch_pipeline()
         truck_name = df_pipe.loc[df_pipe['id'] == record_id, 'Truck'].values[0] if not df_pipe.empty else None
 
-        # 1. Update the Pipeline Status
+        # 1. Update the Pipeline Status (This keeps today's date for workflow tracking)
         update_data = {
             "Status": new_status, 
             "Date": datetime.today().strftime("%Y-%m-%d"),
@@ -113,25 +116,41 @@ def advance_pipeline():
         pipeline_table.update(record_id, update_data)
         st.toast("✅ Truck advanced to new bank!")
 
-        # 2. Automate the Last Sample KM Profile Update
+        # 2. Automate the Last Sample KM Profile Update (Using historical search)
         if record_new_sample and truck_name:
-            current_fleet_kms = st.session_state.get("current_fleet_kms", {})
-            current_km = current_fleet_kms.get(truck_name, 0)
+            fleet_history = st.session_state.get("fleet_history_kms", {})
+            truck_history = fleet_history.get(truck_name, {})
+            
+            current_km = 0
+            
+            # Look for an exact match for the backdated date
+            if target_d_str in truck_history:
+                current_km = truck_history[target_d_str]
+            else:
+                # Fallback: Find the closest recorded date to the backdate
+                history_dates = []
+                for d_str, km in truck_history.items():
+                    try:
+                        dt = pd.to_datetime(d_str, errors="coerce")
+                        if pd.notna(dt): history_dates.append((dt, km))
+                    except: pass
+                
+                if history_dates:
+                    closest = min(history_dates, key=lambda x: abs((x[0] - pd.to_datetime(sample_date_val)).days))
+                    current_km = closest[1]
             
             if current_km > 0:
                 profiles_df = fetch_truck_profiles()
                 existing_profile = profiles_df[profiles_df['Truck'] == truck_name] if not profiles_df.empty else pd.DataFrame()
                 
-                today_str = datetime.today().strftime("%Y-%m-%d")
-                
                 if not existing_profile.empty:
                     prof_id = existing_profile.iloc[0]['id']
-                    profiles_table.update(prof_id, {"Last Sample KM": int(current_km), "Last Sample Date": today_str})
+                    profiles_table.update(prof_id, {"Last Sample KM": int(current_km), "Last Sample Date": target_d_str})
                 else:
-                    profiles_table.create({"Truck": truck_name, "Last Sample KM": int(current_km), "Last Sample Date": today_str})
-                st.success(f"✅ Baseline updated! New Last Sample KM for {truck_name} is {int(current_km)}.")
+                    profiles_table.create({"Truck": truck_name, "Last Sample KM": int(current_km), "Last Sample Date": target_d_str})
+                st.success(f"✅ Baseline updated! New Last Sample KM for {truck_name} is {int(current_km)} (drawn on {target_d_str}).")
             else:
-                st.warning("⚠️ Could not update baseline KM. Ensure you have uploaded the latest Mileage file in step 1.")
+                st.warning("⚠️ Could not update baseline KM. Ensure you have uploaded a Mileage file containing data for this truck.")
 
     except Exception as e:
         st.error(f"❌ Update failed: {e}")
@@ -150,7 +169,7 @@ def delete_last_row():
 def process_analytics(df_oil, df_mileage):
     results = []
     
-    # Extract Dates array from Mileage File securely
+    # Extract Dates array securely
     dates_array = [str(col) for col in df_mileage.columns]
     has_real_dates = any(re.search(r'202\d-', d) for d in dates_array)
     
@@ -161,14 +180,14 @@ def process_analytics(df_oil, df_mileage):
                 dates_array = row_vals
                 break
                 
-    # Fetch Airtable Profiles (Replaces the old Excel upload)
+    # Fetch Airtable Profiles
     df_samples = fetch_truck_profiles()
     
-    # Dictionary to save latest KMs for the Pipeline automation
-    fleet_latest_kms = {}
+    # Save the FULL history of KMs to memory for the backdating feature
+    fleet_historical_kms = {}
 
     for truck in LIST_OF_TRUCKS:
-        mtl_code = truck.split("(")[1].replace(")", "") # e.g. MTL01
+        mtl_code = truck.split("(")[1].replace(")", "") 
         
         # 1. Get Mileage History & Latest KM
         mask_mileage = df_mileage.apply(lambda r: any(mtl_code in str(x) for x in r), axis=1)
@@ -187,7 +206,6 @@ def process_analytics(df_oil, df_mileage):
                 except: pass
                     
             latest_km = max(numeric_vals) if numeric_vals else 0
-            fleet_latest_kms[truck] = latest_km # Save to memory for automation
             
             for idx, val in enumerate(row_data):
                 if idx < len(dates_array):
@@ -197,8 +215,11 @@ def process_analytics(df_oil, df_mileage):
                             km_val = float(val)
                             if pd.notna(km_val): truck_km_history[d_str] = km_val
                         except: pass
+        
+        # Save truck's exact date-to-km history into global memory
+        fleet_historical_kms[truck] = truck_km_history
                             
-        # 2. Get Last Sample KM from Airtable Profile (Clock B)
+        # 2. Get Last Sample KM from Airtable
         sample_km = 0
         if not df_samples.empty and "Truck" in df_samples.columns:
             mask_samples = df_samples["Truck"].apply(lambda x: mtl_code in str(x))
@@ -210,7 +231,7 @@ def process_analytics(df_oil, df_mileage):
                 except:
                     sample_km = 0
             
-        # 3. Check for Full Replenishment (Clock A)
+        # 3. Check for Full Replenishment 
         replenish_km = 0
         if "Identity No" in df_oil.columns:
             mask_oil = df_oil["Identity No"].apply(lambda x: mtl_code in str(x))
@@ -271,8 +292,8 @@ def process_analytics(df_oil, df_mileage):
             "Health": status
         })
     
-    # Save the fleet's latest KMs to session state so the Pipeline Manager can use them
-    st.session_state.current_fleet_kms = fleet_latest_kms
+    # Save the master history list to session state for backdating later
+    st.session_state.fleet_history_kms = fleet_historical_kms
     
     return pd.DataFrame(results)
 
@@ -332,14 +353,21 @@ if not df_pipeline.empty:
     active_df = df_pipeline[df_pipeline["Status"] != BANKS[4]]
     if not active_df.empty:
         record_options = {row["id"]: f"{row['Truck']} ➔ {row['Status']}" for _, row in active_df.iterrows()}
+        
         m_col1, m_col2 = st.columns(2)
         with m_col1:
             st.selectbox("Select Active Truck", options=[""] + list(record_options.keys()), format_func=lambda x: record_options.get(x, ""), key="upd_record")
             st.selectbox("Advance to New Bank", BANKS, index=2, key="upd_status")
-            # NEW FEATURE: Auto-update Baseline KM
-            st.checkbox("♻️ Record New Sample Taken Today (Updates Baseline KM)", key="upd_new_sample")
+            
+            # NEW: Backdate Option
+            st.write("")
+            record_new_sample = st.checkbox("♻️ Record New Sample (Updates Baseline KM)", key="upd_new_sample")
+            if record_new_sample:
+                st.date_input("Select Date Sample Was Drawn", datetime.today(), key="upd_sample_date")
+                
         with m_col2:
-            st.text_area("Lab Results / Intervention Notes to Append", height=110, key="upd_notes")
+            st.text_area("Lab Results / Intervention Notes to Append", height=130, key="upd_notes")
+            
         st.button("🚀 Advance Status", use_container_width=True, on_click=advance_pipeline)
     else:
         st.info("No active trucks in the pipeline to advance.")
