@@ -180,7 +180,7 @@ def process_analytics(df_oil, df_mileage):
                 dates_array = row_vals
                 break
                 
-    # OPTIMIZATION: Pre-parse all global dates to stop CPU lock-ups
+    # Pre-parse all global dates to stop CPU lock-ups
     global_parsed_dates = {}
     for d in dates_array:
         d_str = str(d).strip()
@@ -189,8 +189,8 @@ def process_analytics(df_oil, df_mileage):
             if pd.notna(parsed):
                 global_parsed_dates[d_str] = parsed
 
-    # OPTIMIZATION: Convert mileage dataframe to strings once for lightning-fast lookups
-    df_mileage_str = df_mileage.astype(str).apply(' '.join, axis=1)
+    # FULLY FIXED OPTIMIZATION: Bulletproof string conversion
+    df_mileage_str = df_mileage.apply(lambda row: ' '.join(str(val) for val in row), axis=1)
                 
     df_samples = fetch_truck_profiles()
     
@@ -205,7 +205,7 @@ def process_analytics(df_oil, df_mileage):
         
         latest_km = 0
         truck_km_history = {}
-        parsed_history_dates = [] # Holds pre-calculated dates for this specific truck
+        parsed_history_dates = [] 
         
         if not truck_row.empty:
             row_data = [str(x).replace(",", "").strip() for x in truck_row.iloc[0]]
@@ -272,7 +272,6 @@ def process_analytics(df_oil, df_mileage):
                             if target_d_str in truck_km_history: 
                                 found_km = truck_km_history[target_d_str]
                             else:
-                                # OPTIMIZATION: Instant date lookup, no looping required
                                 if parsed_history_dates:
                                     closest = min(parsed_history_dates, key=lambda x: abs((x[0] - parsed_date).days))
                                     found_km = closest[1]
