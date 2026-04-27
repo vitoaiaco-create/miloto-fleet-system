@@ -41,7 +41,6 @@ def fetch_pipeline():
             row["id"] = r["id"]
             flat_data.append(row)
         df = pd.DataFrame(flat_data)
-        # ADDED ODOMETER HERE
         expected_cols = ["Date", "Truck", "Status", "Odometer", "Notes", "Logged By"]
         for col in expected_cols:
             if col not in df.columns:
@@ -76,14 +75,11 @@ def log_new_sample():
         st.error("⚠️ Please select at least one truck.")
         return
         
-    # Grab the latest KMs from memory so we can auto-fill the Odometer column
     current_fleet_kms = st.session_state.get("current_fleet_kms", {})
     
     try:
         for truck in selected_trucks:
-            # Auto-fetch the Odometer
             truck_odo = int(current_fleet_kms.get(truck, 0))
-            
             pipeline_table.create({
                 "Date": datetime.today().strftime("%Y-%m-%d"),
                 "Truck": truck,
@@ -114,7 +110,6 @@ def advance_pipeline():
         df_pipe = fetch_pipeline()
         truck_name = df_pipe.loc[df_pipe['id'] == record_id, 'Truck'].values[0] if not df_pipe.empty else None
 
-        # 1. Update the Pipeline Status
         update_data = {
             "Status": new_status, 
             "Date": datetime.today().strftime("%Y-%m-%d"),
@@ -125,11 +120,9 @@ def advance_pipeline():
         pipeline_table.update(record_id, update_data)
         st.toast("✅ Truck advanced to new bank!")
 
-        # 2. Automate the Last Sample KM Profile Update (Using historical search)
         if record_new_sample and truck_name:
             fleet_history = st.session_state.get("fleet_history_kms", {})
             truck_history = fleet_history.get(truck_name, {})
-            
             current_km = 0
             
             if target_d_str in truck_history:
@@ -176,6 +169,7 @@ def delete_last_row():
 def process_analytics(df_oil, df_mileage):
     results = []
     
+    # 1. Extract Dates array securely
     dates_array = [str(col) for col in df_mileage.columns]
     has_real_dates = any(re.search(r'202\d-', d) for d in dates_array)
     
@@ -186,6 +180,18 @@ def process_analytics(df_oil, df_mileage):
                 dates_array = row_vals
                 break
                 
+    # OPTIMIZATION: Pre-parse all global dates to stop CPU lock-ups
+    global_parsed_dates = {}
+    for d in dates_array:
+        d_str = str(d).strip()
+        if re.search(r'202\d-', d_str):
+            parsed = pd.to_datetime(d_str, errors="coerce")
+            if pd.notna(parsed):
+                global_parsed_dates[d_str] = parsed
+
+    # OPTIMIZATION: Convert mileage dataframe to strings once for lightning-fast lookups
+    df_mileage_str = df_mileage.astype(str).apply(' '.join, axis=1)
+                
     df_samples = fetch_truck_profiles()
     
     fleet_historical_kms = {}
@@ -194,11 +200,12 @@ def process_analytics(df_oil, df_mileage):
     for truck in LIST_OF_TRUCKS:
         mtl_code = truck.split("(")[1].replace(")", "") 
         
-        mask_mileage = df_mileage.apply(lambda r: any(mtl_code in str(x) for x in r), axis=1)
-        truck_row = df_mileage[mask_mileage]
+        # Super-fast vector lookup instead of iterating rows
+        truck_row = df_mileage[df_mileage_str.str.contains(mtl_code, na=False)]
         
         latest_km = 0
         truck_km_history = {}
+        parsed_history_dates = [] # Holds pre-calculated dates for this specific truck
         
         if not truck_row.empty:
             row_data = [str(x).replace(",", "").strip() for x in truck_row.iloc[0]]
@@ -210,15 +217,17 @@ def process_analytics(df_oil, df_mileage):
                 except: pass
                     
             latest_km = max(numeric_vals) if numeric_vals else 0
-            fleet_latest_kms[truck] = latest_km # Save for auto-odometer logging
+            fleet_latest_kms[truck] = latest_km
             
             for idx, val in enumerate(row_data):
                 if idx < len(dates_array):
                     d_str = str(dates_array[idx]).strip()
-                    if re.search(r'202\d-', d_str):
+                    if d_str in global_parsed_dates:
                         try:
                             km_val = float(val)
-                            if pd.notna(km_val): truck_km_history[d_str] = km_val
+                            if pd.notna(km_val): 
+                                truck_km_history[d_str] = km_val
+                                parsed_history_dates.append((global_parsed_dates[d_str], km_val))
                         except: pass
         
         fleet_historical_kms[truck] = truck_km_history
@@ -260,16 +269,12 @@ def process_analytics(df_oil, df_mileage):
                             target_d_str = parsed_date.strftime("%Y-%m-%d")
                             found_km = 0
                             
-                            if target_d_str in truck_km_history: found_km = truck_km_history[target_d_str]
+                            if target_d_str in truck_km_history: 
+                                found_km = truck_km_history[target_d_str]
                             else:
-                                history_dates = []
-                                for d_str, km in truck_km_history.items():
-                                    try:
-                                        dt = pd.to_datetime(d_str, errors="coerce")
-                                        if pd.notna(dt): history_dates.append((dt, km))
-                                    except: pass
-                                if history_dates:
-                                    closest = min(history_dates, key=lambda x: abs((x[0] - parsed_date).days))
+                                # OPTIMIZATION: Instant date lookup, no looping required
+                                if parsed_history_dates:
+                                    closest = min(parsed_history_dates, key=lambda x: abs((x[0] - parsed_date).days))
                                     found_km = closest[1]
                                     
                             if found_km > replenish_km: replenish_km = found_km
@@ -381,7 +386,6 @@ st.subheader("📊 4. Pipeline Dashboard (The 5 Banks)")
 
 if not df_pipeline.empty:
     tabs = st.tabs(["1️⃣ Due for Coll.", "2️⃣ Pend. Dispatch", "3️⃣ Sent to Lab", "4️⃣ Pend. Interv.", "5️⃣ Completed"])
-    # DISPLAY ODOMETER IN THE DASHBOARDS
     cols_to_show = ["Select", "Date", "Truck", "Odometer", "Notes", "Logged By", "id"]
     
     for i, bank_name in enumerate(BANKS):
