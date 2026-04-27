@@ -41,7 +41,8 @@ def fetch_pipeline():
             row["id"] = r["id"]
             flat_data.append(row)
         df = pd.DataFrame(flat_data)
-        expected_cols = ["Date", "Truck", "Status", "Notes", "Logged By"]
+        # ADDED ODOMETER HERE
+        expected_cols = ["Date", "Truck", "Status", "Odometer", "Notes", "Logged By"]
         for col in expected_cols:
             if col not in df.columns:
                 df[col] = ""
@@ -70,20 +71,29 @@ def log_new_sample():
     selected_trucks = st.session_state.new_trucks 
     status = st.session_state.new_status
     notes = st.session_state.new_notes
+    
     if not selected_trucks:
         st.error("⚠️ Please select at least one truck.")
         return
+        
+    # Grab the latest KMs from memory so we can auto-fill the Odometer column
+    current_fleet_kms = st.session_state.get("current_fleet_kms", {})
+    
     try:
         for truck in selected_trucks:
+            # Auto-fetch the Odometer
+            truck_odo = int(current_fleet_kms.get(truck, 0))
+            
             pipeline_table.create({
                 "Date": datetime.today().strftime("%Y-%m-%d"),
                 "Truck": truck,
                 "Status": status,
+                "Odometer": str(truck_odo) if truck_odo > 0 else "Unknown",
                 "Notes": notes,
                 "Logged By": st.session_state.get("role", "Unknown")
             })
         st.session_state.new_trucks = []
-        st.toast(f"✅ {len(selected_trucks)} truck(s) added to pipeline!")
+        st.toast(f"✅ {len(selected_trucks)} truck(s) added to pipeline with Odometers!")
     except Exception as e:
         st.error(f"❌ Could not create record: {e}")
 
@@ -92,7 +102,6 @@ def advance_pipeline():
     new_status = st.session_state.upd_status
     action_notes = st.session_state.upd_notes
     
-    # Check if they want to record a new sample, and grab the backdated date
     record_new_sample = st.session_state.get("upd_new_sample", False)
     sample_date_val = st.session_state.get("upd_sample_date", datetime.today())
     target_d_str = sample_date_val.strftime("%Y-%m-%d")
@@ -105,7 +114,7 @@ def advance_pipeline():
         df_pipe = fetch_pipeline()
         truck_name = df_pipe.loc[df_pipe['id'] == record_id, 'Truck'].values[0] if not df_pipe.empty else None
 
-        # 1. Update the Pipeline Status (This keeps today's date for workflow tracking)
+        # 1. Update the Pipeline Status
         update_data = {
             "Status": new_status, 
             "Date": datetime.today().strftime("%Y-%m-%d"),
@@ -123,11 +132,9 @@ def advance_pipeline():
             
             current_km = 0
             
-            # Look for an exact match for the backdated date
             if target_d_str in truck_history:
                 current_km = truck_history[target_d_str]
             else:
-                # Fallback: Find the closest recorded date to the backdate
                 history_dates = []
                 for d_str, km in truck_history.items():
                     try:
@@ -169,7 +176,6 @@ def delete_last_row():
 def process_analytics(df_oil, df_mileage):
     results = []
     
-    # Extract Dates array securely
     dates_array = [str(col) for col in df_mileage.columns]
     has_real_dates = any(re.search(r'202\d-', d) for d in dates_array)
     
@@ -180,16 +186,14 @@ def process_analytics(df_oil, df_mileage):
                 dates_array = row_vals
                 break
                 
-    # Fetch Airtable Profiles
     df_samples = fetch_truck_profiles()
     
-    # Save the FULL history of KMs to memory for the backdating feature
     fleet_historical_kms = {}
+    fleet_latest_kms = {}
 
     for truck in LIST_OF_TRUCKS:
         mtl_code = truck.split("(")[1].replace(")", "") 
         
-        # 1. Get Mileage History & Latest KM
         mask_mileage = df_mileage.apply(lambda r: any(mtl_code in str(x) for x in r), axis=1)
         truck_row = df_mileage[mask_mileage]
         
@@ -206,6 +210,7 @@ def process_analytics(df_oil, df_mileage):
                 except: pass
                     
             latest_km = max(numeric_vals) if numeric_vals else 0
+            fleet_latest_kms[truck] = latest_km # Save for auto-odometer logging
             
             for idx, val in enumerate(row_data):
                 if idx < len(dates_array):
@@ -216,10 +221,8 @@ def process_analytics(df_oil, df_mileage):
                             if pd.notna(km_val): truck_km_history[d_str] = km_val
                         except: pass
         
-        # Save truck's exact date-to-km history into global memory
         fleet_historical_kms[truck] = truck_km_history
                             
-        # 2. Get Last Sample KM from Airtable
         sample_km = 0
         if not df_samples.empty and "Truck" in df_samples.columns:
             mask_samples = df_samples["Truck"].apply(lambda x: mtl_code in str(x))
@@ -231,7 +234,6 @@ def process_analytics(df_oil, df_mileage):
                 except:
                     sample_km = 0
             
-        # 3. Check for Full Replenishment 
         replenish_km = 0
         if "Identity No" in df_oil.columns:
             mask_oil = df_oil["Identity No"].apply(lambda x: mtl_code in str(x))
@@ -273,7 +275,6 @@ def process_analytics(df_oil, df_mileage):
                             if found_km > replenish_km: replenish_km = found_km
                     except: pass
                         
-        # 4. Final Calculation
         starting_km = max(sample_km, replenish_km)
         running_km = latest_km - starting_km
         if running_km < 0: running_km = 0 
@@ -292,8 +293,8 @@ def process_analytics(df_oil, df_mileage):
             "Health": status
         })
     
-    # Save the master history list to session state for backdating later
     st.session_state.fleet_history_kms = fleet_historical_kms
+    st.session_state.current_fleet_kms = fleet_latest_kms
     
     return pd.DataFrame(results)
 
@@ -359,7 +360,6 @@ if not df_pipeline.empty:
             st.selectbox("Select Active Truck", options=[""] + list(record_options.keys()), format_func=lambda x: record_options.get(x, ""), key="upd_record")
             st.selectbox("Advance to New Bank", BANKS, index=2, key="upd_status")
             
-            # NEW: Backdate Option
             st.write("")
             record_new_sample = st.checkbox("♻️ Record New Sample (Updates Baseline KM)", key="upd_new_sample")
             if record_new_sample:
@@ -381,7 +381,8 @@ st.subheader("📊 4. Pipeline Dashboard (The 5 Banks)")
 
 if not df_pipeline.empty:
     tabs = st.tabs(["1️⃣ Due for Coll.", "2️⃣ Pend. Dispatch", "3️⃣ Sent to Lab", "4️⃣ Pend. Interv.", "5️⃣ Completed"])
-    cols_to_show = ["Select", "Date", "Truck", "Notes", "Logged By", "id"]
+    # DISPLAY ODOMETER IN THE DASHBOARDS
+    cols_to_show = ["Select", "Date", "Truck", "Odometer", "Notes", "Logged By", "id"]
     
     for i, bank_name in enumerate(BANKS):
         with tabs[i]:
@@ -396,7 +397,7 @@ if not df_pipeline.empty:
                     hide_index=True,
                     key=f"editor_{i}",
                     column_config={"id": None, "Select": st.column_config.CheckboxColumn("Select", default=False)},
-                    disabled=["Date", "Truck", "Notes", "Logged By"]
+                    disabled=["Date", "Truck", "Odometer", "Notes", "Logged By"]
                 )
                 
                 selected_ids = edited_df[edited_df["Select"] == True]["id"].tolist()
