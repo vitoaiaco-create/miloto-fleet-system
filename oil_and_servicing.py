@@ -3,6 +3,7 @@ import pandas as pd
 from pyairtable import Api
 from datetime import datetime
 import re
+import io
 
 # --- 1. AIRTABLE CONNECTIONS ---
 api = Api(st.secrets["AIRTABLE_TOKEN"])
@@ -28,7 +29,8 @@ BANKS = [
     "5. Completed Interventions"
 ]
 
-# --- 4. AIRTABLE DATA FETCHING ---
+# --- 4. AIRTABLE DATA FETCHING (CACHED) ---
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_pipeline():
     try:
         records = pipeline_table.all()
@@ -50,6 +52,7 @@ def fetch_pipeline():
         st.error(f"❌ Airtable Pipeline Error: {e}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_truck_profiles():
     try:
         records = profiles_table.all()
@@ -90,6 +93,9 @@ def log_new_sample():
             })
         st.session_state.new_trucks = []
         st.toast(f"✅ {len(selected_trucks)} truck(s) added to pipeline with Odometers!")
+        
+        # CLEAR CACHE SO THE NEW LOGS APPEAR INSTANTLY
+        fetch_pipeline.clear()
     except Exception as e:
         st.error(f"❌ Could not create record: {e}")
 
@@ -152,6 +158,10 @@ def advance_pipeline():
             else:
                 st.warning("⚠️ Could not update baseline KM. Ensure you have uploaded a Mileage file containing data for this truck.")
 
+        # CLEAR CACHES TO REFLECT UPDATES
+        fetch_pipeline.clear()
+        fetch_truck_profiles.clear()
+
     except Exception as e:
         st.error(f"❌ Update failed: {e}")
 
@@ -162,14 +172,21 @@ def delete_last_row():
             records.sort(key=lambda x: x.get("createdTime", ""), reverse=True)
             pipeline_table.delete(records[0]["id"])
             st.toast("🗑️ Last entry deleted!")
+            fetch_pipeline.clear()
     except Exception as e:
         st.error(f"❌ Airtable Error: {e}")
 
-# --- 6. ANALYTICS ENGINE (THE TWO CLOCKS) ---
-def process_analytics(df_oil, df_mileage):
+# --- 6. FILE PARSING & ANALYTICS ENGINE (CACHED) ---
+@st.cache_data(show_spinner=False)
+def parse_files(oil_bytes, oil_name, mileage_bytes, mileage_name):
+    df_oil = pd.read_csv(io.BytesIO(oil_bytes)) if oil_name.endswith('.csv') else pd.read_excel(io.BytesIO(oil_bytes))
+    df_mileage = pd.read_csv(io.BytesIO(mileage_bytes)) if mileage_name.endswith('.csv') else pd.read_excel(io.BytesIO(mileage_bytes))
+    return df_oil, df_mileage
+
+@st.cache_data(show_spinner=False)
+def process_analytics(df_oil, df_mileage, df_samples):
     results = []
     
-    # 1. Extract Dates array securely
     dates_array = [str(col) for col in df_mileage.columns]
     has_real_dates = any(re.search(r'202\d-', d) for d in dates_array)
     
@@ -180,7 +197,6 @@ def process_analytics(df_oil, df_mileage):
                 dates_array = row_vals
                 break
                 
-    # Pre-parse all global dates to stop CPU lock-ups
     global_parsed_dates = {}
     for d in dates_array:
         d_str = str(d).strip()
@@ -189,10 +205,7 @@ def process_analytics(df_oil, df_mileage):
             if pd.notna(parsed):
                 global_parsed_dates[d_str] = parsed
 
-    # 100% BULLETPROOF SEARCH OPTIMIZATION (No .join() used)
     df_mileage_str = df_mileage.astype(str)
-                
-    df_samples = fetch_truck_profiles()
     
     fleet_historical_kms = {}
     fleet_latest_kms = {}
@@ -200,7 +213,6 @@ def process_analytics(df_oil, df_mileage):
     for truck in LIST_OF_TRUCKS:
         mtl_code = truck.split("(")[1].replace(")", "") 
         
-        # Native pandas vector search (bypasses all text merging errors)
         mask_mileage = df_mileage_str.apply(lambda col: col.str.contains(mtl_code, na=False, regex=False)).any(axis=1)
         truck_row = df_mileage[mask_mileage]
         
@@ -298,10 +310,7 @@ def process_analytics(df_oil, df_mileage):
             "Health": status
         })
     
-    st.session_state.fleet_history_kms = fleet_historical_kms
-    st.session_state.current_fleet_kms = fleet_latest_kms
-    
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), fleet_historical_kms, fleet_latest_kms
 
 # --- 7. UI LAYOUT ---
 st.title("🛢️ Condition-Based Oil Analysis System")
@@ -318,12 +327,18 @@ with c2: file_mileage = st.file_uploader("Miloto Mileage", type=['csv', 'xlsx'])
 if file_oil and file_mileage:
     with st.spinner("Crunching data and syncing with Airtable..."):
         try:
-            df_oil = pd.read_csv(file_oil) if file_oil.name.endswith('.csv') else pd.read_excel(file_oil)
-            df_mileage = pd.read_csv(file_mileage) if file_mileage.name.endswith('.csv') else pd.read_excel(file_mileage)
+            # 1. Parse uploaded files (Fast Cached)
+            df_oil, df_mileage = parse_files(file_oil.getvalue(), file_oil.name, file_mileage.getvalue(), file_mileage.name)
             
-            health_df = process_analytics(df_oil, df_mileage)
+            # 2. Fetch live Profiles (Fast Cached)
+            df_samples = fetch_truck_profiles()
             
-            st.success("✅ Fleet Health Calculated!")
+            # 3. Process Analytics (Fast Cached)
+            health_df, hist_kms, latest_kms = process_analytics(df_oil, df_mileage, df_samples)
+            
+            # 4. Save to Session State for the forms below
+            st.session_state.fleet_history_kms = hist_kms
+            st.session_state.current_fleet_kms = latest_kms
             
             t_over, t_soon, t_health = st.tabs(["🔴 Overdue (12,000+)", "🟡 Due Soon (10k - 12k)", "🟢 Healthy (< 10k)"])
             
@@ -410,6 +425,7 @@ if not df_pipeline.empty:
                         for del_id in selected_ids:
                             pipeline_table.delete(del_id)
                         st.success("✅ Log(s) permanently deleted!")
+                        fetch_pipeline.clear() # Clear cache on delete
                         st.rerun()
             else:
                 st.write(f"No trucks currently in *{bank_name}*.")
