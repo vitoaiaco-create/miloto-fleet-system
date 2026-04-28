@@ -189,8 +189,8 @@ def process_analytics(df_oil, df_mileage):
             if pd.notna(parsed):
                 global_parsed_dates[d_str] = parsed
 
-    # FULLY FIXED OPTIMIZATION: Bulletproof string conversion
-    df_mileage_str = df_mileage.apply(lambda row: ' '.join(str(val) for val in row), axis=1)
+    # 100% BULLETPROOF SEARCH OPTIMIZATION (No .join() used)
+    df_mileage_str = df_mileage.astype(str)
                 
     df_samples = fetch_truck_profiles()
     
@@ -200,8 +200,9 @@ def process_analytics(df_oil, df_mileage):
     for truck in LIST_OF_TRUCKS:
         mtl_code = truck.split("(")[1].replace(")", "") 
         
-        # Super-fast vector lookup instead of iterating rows
-        truck_row = df_mileage[df_mileage_str.str.contains(mtl_code, na=False)]
+        # Native pandas vector search (bypasses all text merging errors)
+        mask_mileage = df_mileage_str.apply(lambda col: col.str.contains(mtl_code, na=False, regex=False)).any(axis=1)
+        truck_row = df_mileage[mask_mileage]
         
         latest_km = 0
         truck_km_history = {}
