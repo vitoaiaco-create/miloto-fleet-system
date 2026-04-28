@@ -93,14 +93,12 @@ def log_new_sample():
             })
         st.session_state.new_trucks = []
         st.toast(f"✅ {len(selected_trucks)} truck(s) added to pipeline with Odometers!")
-        
-        # CLEAR CACHE SO THE NEW LOGS APPEAR INSTANTLY
         fetch_pipeline.clear()
     except Exception as e:
         st.error(f"❌ Could not create record: {e}")
 
 def advance_pipeline():
-    record_id = st.session_state.upd_record
+    record_ids = st.session_state.get("upd_records", [])
     new_status = st.session_state.upd_status
     action_notes = st.session_state.upd_notes
     
@@ -108,57 +106,59 @@ def advance_pipeline():
     sample_date_val = st.session_state.get("upd_sample_date", datetime.today())
     target_d_str = sample_date_val.strftime("%Y-%m-%d")
     
-    if not record_id:
-        st.error("⚠️ Select a truck from the active pipeline to update.")
+    if not record_ids:
+        st.error("⚠️ Select at least one truck from the checklist to advance.")
         return
         
     try:
         df_pipe = fetch_pipeline()
-        truck_name = df_pipe.loc[df_pipe['id'] == record_id, 'Truck'].values[0] if not df_pipe.empty else None
+        
+        for rec_id in record_ids:
+            truck_name = df_pipe.loc[df_pipe['id'] == rec_id, 'Truck'].values[0] if not df_pipe.empty else None
 
-        update_data = {
-            "Status": new_status, 
-            "Date": datetime.today().strftime("%Y-%m-%d"),
-            "Logged By": st.session_state.get("role", "Unknown")
-        }
-        if action_notes:
-            update_data["Notes"] = action_notes
-        pipeline_table.update(record_id, update_data)
-        st.toast("✅ Truck advanced to new bank!")
+            # 1. Update the Pipeline Status
+            update_data = {
+                "Status": new_status, 
+                "Date": datetime.today().strftime("%Y-%m-%d"),
+                "Logged By": st.session_state.get("role", "Unknown")
+            }
+            if action_notes:
+                update_data["Notes"] = action_notes
+            pipeline_table.update(rec_id, update_data)
 
-        if record_new_sample and truck_name:
-            fleet_history = st.session_state.get("fleet_history_kms", {})
-            truck_history = fleet_history.get(truck_name, {})
-            current_km = 0
-            
-            if target_d_str in truck_history:
-                current_km = truck_history[target_d_str]
-            else:
-                history_dates = []
-                for d_str, km in truck_history.items():
-                    try:
-                        dt = pd.to_datetime(d_str, errors="coerce")
-                        if pd.notna(dt): history_dates.append((dt, km))
-                    except: pass
+            # 2. Automate the Last Sample KM Profile Update
+            if record_new_sample and truck_name:
+                fleet_history = st.session_state.get("fleet_history_kms", {})
+                truck_history = fleet_history.get(truck_name, {})
+                current_km = 0
                 
-                if history_dates:
-                    closest = min(history_dates, key=lambda x: abs((x[0] - pd.to_datetime(sample_date_val)).days))
-                    current_km = closest[1]
-            
-            if current_km > 0:
-                profiles_df = fetch_truck_profiles()
-                existing_profile = profiles_df[profiles_df['Truck'] == truck_name] if not profiles_df.empty else pd.DataFrame()
-                
-                if not existing_profile.empty:
-                    prof_id = existing_profile.iloc[0]['id']
-                    profiles_table.update(prof_id, {"Last Sample KM": int(current_km), "Last Sample Date": target_d_str})
+                if target_d_str in truck_history:
+                    current_km = truck_history[target_d_str]
                 else:
-                    profiles_table.create({"Truck": truck_name, "Last Sample KM": int(current_km), "Last Sample Date": target_d_str})
-                st.success(f"✅ Baseline updated! New Last Sample KM for {truck_name} is {int(current_km)} (drawn on {target_d_str}).")
-            else:
-                st.warning("⚠️ Could not update baseline KM. Ensure you have uploaded a Mileage file containing data for this truck.")
-
-        # CLEAR CACHES TO REFLECT UPDATES
+                    history_dates = []
+                    for d_str, km in truck_history.items():
+                        try:
+                            dt = pd.to_datetime(d_str, errors="coerce")
+                            if pd.notna(dt): history_dates.append((dt, km))
+                        except: pass
+                    
+                    if history_dates:
+                        closest = min(history_dates, key=lambda x: abs((x[0] - pd.to_datetime(sample_date_val)).days))
+                        current_km = closest[1]
+                
+                if current_km > 0:
+                    profiles_df = fetch_truck_profiles()
+                    existing_profile = profiles_df[profiles_df['Truck'] == truck_name] if not profiles_df.empty else pd.DataFrame()
+                    
+                    if not existing_profile.empty:
+                        prof_id = existing_profile.iloc[0]['id']
+                        profiles_table.update(prof_id, {"Last Sample KM": int(current_km), "Last Sample Date": target_d_str})
+                    else:
+                        profiles_table.create({"Truck": truck_name, "Last Sample KM": int(current_km), "Last Sample Date": target_d_str})
+                        
+        st.toast(f"✅ {len(record_ids)} Truck(s) advanced successfully!")
+        
+        # Clear Caches
         fetch_pipeline.clear()
         fetch_truck_profiles.clear()
 
@@ -327,18 +327,14 @@ with c2: file_mileage = st.file_uploader("Miloto Mileage", type=['csv', 'xlsx'])
 if file_oil and file_mileage:
     with st.spinner("Crunching data and syncing with Airtable..."):
         try:
-            # 1. Parse uploaded files (Fast Cached)
             df_oil, df_mileage = parse_files(file_oil.getvalue(), file_oil.name, file_mileage.getvalue(), file_mileage.name)
-            
-            # 2. Fetch live Profiles (Fast Cached)
             df_samples = fetch_truck_profiles()
-            
-            # 3. Process Analytics (Fast Cached)
             health_df, hist_kms, latest_kms = process_analytics(df_oil, df_mileage, df_samples)
             
-            # 4. Save to Session State for the forms below
             st.session_state.fleet_history_kms = hist_kms
             st.session_state.current_fleet_kms = latest_kms
+            
+            st.success("✅ Fleet Health Calculated!")
             
             t_over, t_soon, t_health = st.tabs(["🔴 Overdue (12,000+)", "🟡 Due Soon (10k - 12k)", "🟢 Healthy (< 10k)"])
             
@@ -366,29 +362,63 @@ st.divider()
 
 df_pipeline = fetch_pipeline()
 
-# --- PART C: PIPELINE MANAGER ---
-st.subheader("🔄 3. Advance Truck in Pipeline")
-st.caption("Update a truck's status when lab results arrive or interventions are completed.")
+# --- PART C: PIPELINE MANAGER (BULK UPGRADE) ---
+st.subheader("🔄 3. Advance Truck(s) in Pipeline")
+st.caption("Select a bank, check the trucks you want to move, and advance them in bulk.")
 
 if not df_pipeline.empty:
     active_df = df_pipeline[df_pipeline["Status"] != BANKS[4]]
+    
     if not active_df.empty:
-        record_options = {row["id"]: f"{row['Truck']} ➔ {row['Status']}" for _, row in active_df.iterrows()}
+        # 1. Filter by Current Bank
+        current_bank_filter = st.selectbox("1. Filter by Current Status (Bank)", BANKS[:4], key="filter_bank")
+        df_filtered = active_df[active_df["Status"] == current_bank_filter].copy()
         
-        m_col1, m_col2 = st.columns(2)
-        with m_col1:
-            st.selectbox("Select Active Truck", options=[""] + list(record_options.keys()), format_func=lambda x: record_options.get(x, ""), key="upd_record")
-            st.selectbox("Advance to New Bank", BANKS, index=2, key="upd_status")
+        if not df_filtered.empty:
+            df_filtered.insert(0, "Select", False)
+            cols_to_show = ["Select", "Date", "Truck", "Odometer", "Notes", "Logged By", "id"]
+            existing_cols = [c for c in cols_to_show if c in df_filtered.columns]
             
-            st.write("")
-            record_new_sample = st.checkbox("♻️ Record New Sample (Updates Baseline KM)", key="upd_new_sample")
-            if record_new_sample:
-                st.date_input("Select Date Sample Was Drawn", datetime.today(), key="upd_sample_date")
+            # 2. Interactive Checklist
+            edited_advance_df = st.data_editor(
+                df_filtered[existing_cols], 
+                use_container_width=True, 
+                hide_index=True,
+                key="editor_advance",
+                column_config={"id": None, "Select": st.column_config.CheckboxColumn("Select", default=False)},
+                disabled=["Date", "Truck", "Odometer", "Notes", "Logged By"]
+            )
+            
+            # Save selected IDs
+            selected_ids = edited_advance_df[edited_advance_df["Select"] == True]["id"].tolist()
+            st.session_state.upd_records = selected_ids
+            
+            st.write("---")
+            
+            # 3. Action Panel
+            m_col1, m_col2 = st.columns(2)
+            with m_col1:
+                # Auto-suggest the next logical bank
+                next_idx = min(BANKS.index(current_bank_filter) + 1, 4)
+                st.selectbox("2. Advance Selected Trucks To", BANKS, index=next_idx, key="upd_status")
                 
-        with m_col2:
-            st.text_area("Lab Results / Intervention Notes to Append", height=130, key="upd_notes")
-            
-        st.button("🚀 Advance Status", use_container_width=True, on_click=advance_pipeline)
+                st.write("")
+                record_new_sample = st.checkbox("♻️ Record New Sample (Updates Baseline KM)", key="upd_new_sample")
+                if record_new_sample:
+                    st.date_input("Select Date Sample Was Drawn", datetime.today(), key="upd_sample_date")
+                    
+            with m_col2:
+                st.text_area("Lab Results / Notes to Append", height=130, key="upd_notes")
+                
+            # Advance Button
+            st.button(
+                f"🚀 Advance {len(selected_ids)} Selected Truck(s)", 
+                use_container_width=True, 
+                on_click=advance_pipeline, 
+                type="primary"
+            )
+        else:
+            st.info(f"No trucks currently sitting in: {current_bank_filter}.")
     else:
         st.info("No active trucks in the pipeline to advance.")
 else:
@@ -414,7 +444,7 @@ if not df_pipeline.empty:
                     df_bank[existing_cols], 
                     use_container_width=True, 
                     hide_index=True,
-                    key=f"editor_{i}",
+                    key=f"editor_delete_{i}",
                     column_config={"id": None, "Select": st.column_config.CheckboxColumn("Select", default=False)},
                     disabled=["Date", "Truck", "Odometer", "Notes", "Logged By"]
                 )
@@ -425,7 +455,7 @@ if not df_pipeline.empty:
                         for del_id in selected_ids:
                             pipeline_table.delete(del_id)
                         st.success("✅ Log(s) permanently deleted!")
-                        fetch_pipeline.clear() # Clear cache on delete
+                        fetch_pipeline.clear()
                         st.rerun()
             else:
                 st.write(f"No trucks currently in *{bank_name}*.")
