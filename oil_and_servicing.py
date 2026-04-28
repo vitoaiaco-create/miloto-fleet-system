@@ -161,6 +161,7 @@ def advance_pipeline():
         # Clear Caches
         fetch_pipeline.clear()
         fetch_truck_profiles.clear()
+        process_analytics.clear() # Clear analytics cache so the pipeline interception triggers instantly
 
     except Exception as e:
         st.error(f"❌ Update failed: {e}")
@@ -173,6 +174,7 @@ def delete_last_row():
             pipeline_table.delete(records[0]["id"])
             st.toast("🗑️ Last entry deleted!")
             fetch_pipeline.clear()
+            process_analytics.clear()
     except Exception as e:
         st.error(f"❌ Airtable Error: {e}")
 
@@ -184,8 +186,13 @@ def parse_files(oil_bytes, oil_name, mileage_bytes, mileage_name):
     return df_oil, df_mileage
 
 @st.cache_data(show_spinner=False)
-def process_analytics(df_oil, df_mileage, df_samples):
+def process_analytics(df_oil, df_mileage, df_samples, df_pipeline):
     results = []
+    
+    # NEW INTERCEPTOR: Get list of active trucks in the pipeline (Banks 1-4)
+    active_pipeline_trucks = []
+    if not df_pipeline.empty:
+        active_pipeline_trucks = df_pipeline[df_pipeline["Status"] != BANKS[4]]["Truck"].tolist()
     
     dates_array = [str(col) for col in df_mileage.columns]
     has_real_dates = any(re.search(r'202\d-', d) for d in dates_array)
@@ -297,7 +304,11 @@ def process_analytics(df_oil, df_mileage, df_samples):
         if running_km < 0: running_km = 0 
         
         status = "⚪ No Baseline Data"
-        if starting_km > 0: 
+        
+        # --- THE INTERCEPTOR LOGIC ---
+        if truck in active_pipeline_trucks:
+            status = "🔄 In Pipeline"
+        elif starting_km > 0: 
             if running_km >= 12000: status = "🔴 Overdue"
             elif running_km >= 10000: status = "🟡 Due Soon"
             else: status = "🟢 Healthy"
@@ -316,9 +327,13 @@ def process_analytics(df_oil, df_mileage, df_samples):
 st.title("🛢️ Condition-Based Oil Analysis System")
 st.divider()
 
+# --- FETCH LIVE PIPELINE BEFORE ANALYTICS ---
+# We fetch this first so the Analytics engine knows who is already being processed
+df_pipeline = fetch_pipeline()
+
 # --- PART A: FLEET HEALTH DASHBOARDS ---
 st.subheader("📈 1. Fleet Health Analytics & Forecasting")
-st.markdown("Upload your two core tracking files. *Last Sample KMs are now pulled automatically from the cloud database.*")
+st.markdown("Upload your two core tracking files. *Trucks actively in the pipeline are automatically hidden from the Overdue list to prevent double-booking.*")
 
 c1, c2 = st.columns(2)
 with c1: file_oil = st.file_uploader("Oil Top-ups & Servicing", type=['csv', 'xlsx'])
@@ -329,18 +344,22 @@ if file_oil and file_mileage:
         try:
             df_oil, df_mileage = parse_files(file_oil.getvalue(), file_oil.name, file_mileage.getvalue(), file_mileage.name)
             df_samples = fetch_truck_profiles()
-            health_df, hist_kms, latest_kms = process_analytics(df_oil, df_mileage, df_samples)
+            
+            # Pass the df_pipeline into process_analytics so it intercepts active trucks
+            health_df, hist_kms, latest_kms = process_analytics(df_oil, df_mileage, df_samples, df_pipeline)
             
             st.session_state.fleet_history_kms = hist_kms
             st.session_state.current_fleet_kms = latest_kms
             
             st.success("✅ Fleet Health Calculated!")
             
-            t_over, t_soon, t_health = st.tabs(["🔴 Overdue (12,000+)", "🟡 Due Soon (10k - 12k)", "🟢 Healthy (< 10k)"])
+            # Added the 4th Tab for visibility
+            t_over, t_soon, t_health, t_pipe = st.tabs(["🔴 Overdue (12,000+)", "🟡 Due Soon (10k - 12k)", "🟢 Healthy (< 10k)", "🔄 In Pipeline"])
             
             with t_over: st.dataframe(health_df[health_df["Health"] == "🔴 Overdue"], use_container_width=True, hide_index=True)
             with t_soon: st.dataframe(health_df[health_df["Health"] == "🟡 Due Soon"], use_container_width=True, hide_index=True)
             with t_health: st.dataframe(health_df[health_df["Health"] == "🟢 Healthy"], use_container_width=True, hide_index=True)
+            with t_pipe: st.dataframe(health_df[health_df["Health"] == "🔄 In Pipeline"], use_container_width=True, hide_index=True)
                 
         except Exception as e:
             st.error(f"❌ Error processing files. Details: {e}")
@@ -360,8 +379,6 @@ with col2:
 
 st.divider()
 
-df_pipeline = fetch_pipeline()
-
 # --- PART C: PIPELINE MANAGER (BULK UPGRADE) ---
 st.subheader("🔄 3. Advance Truck(s) in Pipeline")
 st.caption("Select a bank, check the trucks you want to move, and advance them in bulk.")
@@ -370,7 +387,6 @@ if not df_pipeline.empty:
     active_df = df_pipeline[df_pipeline["Status"] != BANKS[4]]
     
     if not active_df.empty:
-        # 1. Filter by Current Bank
         current_bank_filter = st.selectbox("1. Filter by Current Status (Bank)", BANKS[:4], key="filter_bank")
         df_filtered = active_df[active_df["Status"] == current_bank_filter].copy()
         
@@ -379,7 +395,6 @@ if not df_pipeline.empty:
             cols_to_show = ["Select", "Date", "Truck", "Odometer", "Notes", "Logged By", "id"]
             existing_cols = [c for c in cols_to_show if c in df_filtered.columns]
             
-            # 2. Interactive Checklist
             edited_advance_df = st.data_editor(
                 df_filtered[existing_cols], 
                 use_container_width=True, 
@@ -389,16 +404,13 @@ if not df_pipeline.empty:
                 disabled=["Date", "Truck", "Odometer", "Notes", "Logged By"]
             )
             
-            # Save selected IDs
             selected_ids = edited_advance_df[edited_advance_df["Select"] == True]["id"].tolist()
             st.session_state.upd_records = selected_ids
             
             st.write("---")
             
-            # 3. Action Panel
             m_col1, m_col2 = st.columns(2)
             with m_col1:
-                # Auto-suggest the next logical bank
                 next_idx = min(BANKS.index(current_bank_filter) + 1, 4)
                 st.selectbox("2. Advance Selected Trucks To", BANKS, index=next_idx, key="upd_status")
                 
@@ -410,7 +422,6 @@ if not df_pipeline.empty:
             with m_col2:
                 st.text_area("Lab Results / Notes to Append", height=130, key="upd_notes")
                 
-            # Advance Button
             st.button(
                 f"🚀 Advance {len(selected_ids)} Selected Truck(s)", 
                 use_container_width=True, 
@@ -456,6 +467,7 @@ if not df_pipeline.empty:
                             pipeline_table.delete(del_id)
                         st.success("✅ Log(s) permanently deleted!")
                         fetch_pipeline.clear()
+                        process_analytics.clear()
                         st.rerun()
             else:
                 st.write(f"No trucks currently in *{bank_name}*.")
