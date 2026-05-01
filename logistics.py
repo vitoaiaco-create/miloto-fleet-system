@@ -216,8 +216,9 @@ def generate_yearly_pdf(df_yearly, monthly_totals):
     return pdf.output()
 
 def generate_ytd_tracker_pdf(df_multi, current_month_str):
-    """Outputs the massive 53-column matrix onto a giant A2 Landscape PDF."""
-    pdf = FPDF(orientation="L", unit="mm", format="A2")
+    """Outputs the massive 53-column matrix onto a custom A2-sized Landscape PDF."""
+    # Using explicit dimensions in mm for A2 Landscape (594 wide x 420 tall)
+    pdf = FPDF(orientation="L", unit="mm", format=(420, 594))
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
@@ -228,26 +229,27 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
     pdf.ln(10)
 
     # Flatten headers for PDF printing
-    pdf.set_font("Helvetica", "B", 7)
+    pdf.set_font("Helvetica", "B", 9)
     headers = []
     col_widths = []
     
     for col in df_multi.columns:
         if col[0] == "Truck Details":
             headers.append("Truck ID")
-            col_widths.append(34) # Give truck name more space
+            col_widths.append(40) # Truck name width
         elif col[0] == "YTD Averages":
             headers.append(f"YTD {col[1]}")
-            col_widths.append(15) # Averages need a bit more width
+            col_widths.append(18) # Average columns width
         else:
-            headers.append(f"{col[0]} {col[1]}") # E.g., "Jan Total KM"
-            col_widths.append(9.5) # ~9.5mm per cell for the 48 sub-metrics
+            headers.append(f"{col[0]} {col[1]}")
+            col_widths.append(9.5) # The 48 sub-metrics
             
     for i, h in enumerate(headers):
-        pdf.cell(col_widths[i], 8, h, border=1, align="C")
+        # Multi-line cell for very narrow headers
+        pdf.cell(col_widths[i], 12, h, border=1, align="C")
     pdf.ln()
 
-    pdf.set_font("Helvetica", "", 7)
+    pdf.set_font("Helvetica", "", 8)
     for idx, row in df_multi.iterrows():
         for i, col in enumerate(df_multi.columns):
             val = str(row[col])
@@ -276,7 +278,7 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v5.0 (YTD MultiIndex Matrix & A2 PDF Engine)")
+st.caption("🟢 App Update: v5.1 (A2 PDF Fix & Typography Upgrade)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -379,7 +381,6 @@ if file_trips is not None:
                     })
                 df_yearly = pd.DataFrame(yearly_data)
 
-                # --- BUILD THE MASSIVE YTD TRACKER DATASET ---
                 grid = pd.DataFrame(list(itertools.product(LIST_OF_TRUCKS, all_months)), columns=["Truck", "Month"])
                 df_kms_melt = df_truck_kms.melt(id_vars=["Truck"], var_name="Month", value_name="Mileage") if not df_truck_kms.empty else pd.DataFrame(columns=["Truck", "Month", "Mileage"])
                 df_history = grid.merge(df_kms_melt, on=["Truck", "Month"], how="left").fillna({"Mileage": 0})
@@ -398,7 +399,6 @@ if file_trips is not None:
                 df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r["Total Days"] - r["Workshop Days"]), axis=1)
                 df_history["Avg Days/Trip"] = df_history.apply(lambda r: round(r["Net Available Days"] / r["Total Trips"], 2) if r["Total Trips"] > 0 else 0.0, axis=1)
 
-                # Filter strictly for 2026 data based on prompt requirements
                 df_history_2026 = df_history[df_history["Month"].str.startswith("2026")].copy()
                 months_2026_strs = [f"2026-{str(i).zfill(2)}" for i in range(1, 13)]
                 month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -406,7 +406,6 @@ if file_trips is not None:
                 curr_yr = int(current_month_str[:4])
                 curr_mo = int(current_month_str[5:7])
                 
-                # MultiIndex Column Setup
                 col_tuples = [("Truck Details", "Truck ID")]
                 for m in month_names:
                     col_tuples.extend([(m, "Total KM"), (m, "Total Trips"), (m, "WS Days"), (m, "Avg Days/Trip")])
@@ -456,7 +455,6 @@ if file_trips is not None:
                                 df_multi.at[i, (m_name, "Avg Days/Trip")] = "0.00"
 
                     divisor = curr_mo if curr_yr == 2026 else 12
-                    
                     true_avg_days_trip = ytd_net / ytd_trips if ytd_trips > 0 else 0.0
                     
                     df_multi.at[i, ("YTD Averages", "Avg KM/mo")] = f"{ytd_km/divisor:,.0f}" if divisor > 0 else "0"
@@ -532,12 +530,11 @@ if file_trips is not None:
                     with c_btn3: st.download_button("⬇️ Download Yearly CSV", data=df_yearly.to_csv(index=False).encode('utf-8'), file_name="yearly_fleet.csv", mime="text/csv", use_container_width=True)
                     with c_btn4: st.download_button("📄 Generate Yearly PDF Report", data=bytes(generate_yearly_pdf(df_yearly, monthly_totals)), file_name="ZPC_Yearly_Report.pdf", mime="application/pdf", use_container_width=True, type="primary")
                 
-                # --- TAB 3: YTD TRACKER ---
+                # --- TAB 3 ---
                 with tab3:
                     st.subheader("2026 Year-to-Date Performance Matrix")
                     st.caption("Scroll horizontally to view all months and YTD Averages.")
                     
-                    # Style the MultiIndex dataframe with traffic lights
                     avg_cols = [(m, "Avg Days/Trip") for m in month_names] + [("YTD Averages", "TRUE Avg Days/Trip")]
                     
                     def style_matrix(val):
@@ -559,7 +556,6 @@ if file_trips is not None:
                     
                     c_btn5, c_btn6 = st.columns(2)
                     
-                    # Flatten headers for CSV export to prevent Excel errors
                     df_csv_export = df_multi.copy()
                     df_csv_export.columns = [' '.join(col).strip() for col in df_csv_export.columns.values]
                     
