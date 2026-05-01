@@ -197,7 +197,6 @@ def generate_yearly_pdf(df_yearly, monthly_totals):
     return pdf.output()
 
 def generate_history_pdf(df_pivot, metric_choice):
-    """Generates a landscape PDF for the detailed truck history matrix."""
     pdf = FPDF(orientation="L", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -211,7 +210,6 @@ def generate_history_pdf(df_pivot, metric_choice):
     pdf.set_font("Helvetica", "B", 8)
     cols = df_pivot.columns.tolist()
     
-    # Calculate column widths to fit A4 Landscape perfectly (270mm usable width)
     truck_col_w = 35
     month_col_w = (270 - truck_col_w) / max(1, len(cols) - 1)
     col_widths = [truck_col_w] + [month_col_w] * (len(cols) - 1)
@@ -229,8 +227,7 @@ def generate_history_pdf(df_pivot, metric_choice):
     return pdf.output()
 
 # --- 5. UI & FILE UPLOAD ---
-st.title("🚛 Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v3.1 (Includes Matrix PDF & Sync Sorting)")
+st.title(":material/route: Logistics & Kilometre Dashboard")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -302,7 +299,6 @@ if file_trips is not None:
                 if not df_truck_kms.empty:
                     df_dashboard = df_dashboard.merge(df_truck_kms, on="Truck", how="left").fillna(0)
 
-                # FOR TAB 1
                 tab1_cols = ["Truck", "Total Trips", "Workshop Days", "Net Available Days", "Avg Days per Trip"]
                 df_tab1 = df_dashboard[tab1_cols].copy()
                 df_tab1["Current Month KM"] = df_dashboard[current_month_str].astype(int) if current_month_str in df_dashboard.columns else 0
@@ -311,7 +307,6 @@ if file_trips is not None:
                 current_fleet_avg = round(current_net_days / current_total_trips, 2) if current_total_trips > 0 else 0.0
                 current_total_kms = df_tab1["Current Month KM"].sum()
 
-                # FOR TAB 2
                 all_months = sorted(list(set(list(monthly_totals.keys()) + list(ws_monthly_totals.keys()) + [current_month_str])))
                 yearly_data = []
                 for m in all_months:
@@ -325,7 +320,6 @@ if file_trips is not None:
                     })
                 df_yearly = pd.DataFrame(yearly_data)
 
-                # FOR TAB 3
                 grid = pd.DataFrame(list(itertools.product(LIST_OF_TRUCKS, all_months)), columns=["Truck", "Month"])
                 df_kms_melt = df_truck_kms.melt(id_vars=["Truck"], var_name="Month", value_name="Mileage") if not df_truck_kms.empty else pd.DataFrame(columns=["Truck", "Month", "Mileage"])
                 df_history = grid.merge(df_kms_melt, on=["Truck", "Month"], how="left").fillna({"Mileage": 0})
@@ -345,11 +339,9 @@ if file_trips is not None:
                 df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r["Total Days"] - r["Workshop Days"]), axis=1)
                 df_history["Avg Days/Trip"] = df_history.apply(lambda r: round(r["Net Available Days"] / r["Total Trips"], 2) if r["Total Trips"] > 0 else 0.0, axis=1)
 
-                # RENDER UI
                 st.success("✅ Analytics Engine Complete!")
                 tab1, tab2, tab3 = st.tabs(["📅 Current Month", "📈 Fleet Yearly Trends", "🚚 Detailed Truck History"])
                 
-                # --- TAB 1 ---
                 with tab1:
                     m1, m2, m3, m4, m5 = st.columns(5)
                     m1.metric("Total Trips", int(current_total_trips))
@@ -364,7 +356,6 @@ if file_trips is not None:
                     with sc1: sort_col_tab1 = st.selectbox("Sort Table By:", df_tab1.columns.tolist(), index=df_tab1.columns.tolist().index("Avg Days per Trip"))
                     with sc2: sort_asc_tab1 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort1") == "Ascending"
                     
-                    # Sort backend DF so PDF inherits it perfectly
                     df_tab1 = df_tab1.sort_values(by=sort_col_tab1, ascending=sort_asc_tab1)
                     st.dataframe(df_tab1, use_container_width=True, hide_index=True)
                     
@@ -372,7 +363,6 @@ if file_trips is not None:
                     with c_btn1: st.download_button("⬇️ Download Monthly CSV", data=df_tab1.to_csv(index=False).encode('utf-8'), file_name=f"logistics_{current_month_str}.csv", mime="text/csv", use_container_width=True)
                     with c_btn2: st.download_button("📄 Generate Monthly PDF Report", data=bytes(generate_monthly_pdf(df_tab1, current_month_str)), file_name=f"ZPC_Report_{current_month_str}.pdf", mime="application/pdf", use_container_width=True, type="primary")
 
-                # --- TAB 2 ---
                 with tab2:
                     if monthly_totals:
                         months_labels = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
@@ -400,7 +390,6 @@ if file_trips is not None:
                     with c_btn3: st.download_button("⬇️ Download Yearly CSV", data=df_yearly.to_csv(index=False).encode('utf-8'), file_name="yearly_fleet.csv", mime="text/csv", use_container_width=True)
                     with c_btn4: st.download_button("📄 Generate Yearly PDF Report", data=bytes(generate_yearly_pdf(df_yearly, monthly_totals)), file_name="ZPC_Yearly_Report.pdf", mime="application/pdf", use_container_width=True, type="primary")
                 
-                # --- TAB 3 ---
                 with tab3:
                     metric_choice = st.selectbox("📊 Select Metric to View:", ["Mileage", "Workshop Days", "Total Trips", "Net Available Days", "Avg Days/Trip"])
                     df_pivot = df_history.pivot(index="Truck", columns="Month", values=metric_choice).reset_index().fillna(0)
