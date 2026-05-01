@@ -280,7 +280,7 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v5.4 (YTD Averages Anchored to May 2026)")
+st.caption("🟢 App Update: v6.1 (Clean YTD Average Sorting Enabled)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -404,7 +404,7 @@ if file_trips is not None:
                 curr_yr = int(current_month_str[:4])
                 curr_mo = int(current_month_str[5:7])
 
-                # --- THE FUTURE-PROOF 2026 ANOMALY FIX ---
+                # --- FUTURE-PROOF DUAL-DIVISOR LOGIC ---
                 km_divisor = curr_mo if curr_yr == 2026 else (curr_mo if curr_yr > 2026 else 12)
                 
                 if curr_yr == 2026:
@@ -458,7 +458,6 @@ if file_trips is not None:
                                 
                                 ytd_km += int(r["Mileage"])
                                 
-                                # ONLY ACCUMULATE OPS DATA IF MONTH >= MAY 2026
                                 if m_yr > 2026 or (m_yr == 2026 and m_mo >= 5):
                                     ytd_trips += int(r["Total Trips"])
                                     ytd_ws += int(r["Workshop Days"])
@@ -548,6 +547,41 @@ if file_trips is not None:
                 with tab3:
                     st.subheader(f"{curr_yr} Year-to-Date Performance Matrix")
                     st.caption("Scroll horizontally to view all months and YTD Averages.")
+                    
+                    # --- RESTRICTED YTD MATRIX SORTING ENGINE ---
+                    st.write("---")
+                    st.markdown("**🎛️ Sort Matrix Before Generating PDF:**")
+                    sc3, sc4 = st.columns([2, 1])
+                    
+                    # We ONLY want to sort by the 4 YTD Average columns
+                    ytd_sort_tuples = [
+                        ("YTD Averages", "Avg KM/mo"),
+                        ("YTD Averages", "Avg Trips/mo"),
+                        ("YTD Averages", "Avg WS/mo"),
+                        ("YTD Averages", "TRUE Avg Days/Trip")
+                    ]
+                    
+                    readable_cols = [f"YTD {c[1]}" for c in ytd_sort_tuples]
+                    
+                    with sc3: 
+                        # Set default to TRUE Avg Days/Trip (Index 3)
+                        selected_readable_col = st.selectbox("Sort Matrix By:", readable_cols, index=3)
+                        
+                    with sc4: 
+                        sort_asc_tab3 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort3") == "Ascending"
+                    
+                    actual_sort_tuple = ytd_sort_tuples[readable_cols.index(selected_readable_col)]
+                    
+                    def safe_float(x):
+                        if isinstance(x, str):
+                            if x == "": return -1 
+                            return float(x.replace(',', ''))
+                        return float(x)
+                        
+                    temp_sort_series = df_multi[actual_sort_tuple].apply(safe_float)
+                    df_multi = df_multi.iloc[temp_sort_series.argsort()]
+                    if not sort_asc_tab3:
+                        df_multi = df_multi[::-1]
                     
                     avg_cols = [(m, "Avg Days/Trip") for m in month_names] + [("YTD Averages", "TRUE Avg Days/Trip")]
                     
