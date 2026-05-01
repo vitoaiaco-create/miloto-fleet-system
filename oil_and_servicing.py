@@ -10,7 +10,7 @@ api = Api(st.secrets["AIRTABLE_TOKEN"])
 pipeline_table = api.table(st.secrets["AIRTABLE_BASE_ID"], "Oil & Servicing")
 profiles_table = api.table(st.secrets["AIRTABLE_BASE_ID"], "Truck Profiles")
 
-# --- 2. FLEET SETUP (ALL 127 INCLUDED) ---
+# --- 2. FLEET SETUP ---
 def generate_fleet():
     fleet = []
     for i in range(1, 128):
@@ -29,7 +29,7 @@ BANKS = [
     "5. Completed Interventions"
 ]
 
-# --- 4. AIRTABLE DATA FETCHING (CACHED) ---
+# --- 4. AIRTABLE DATA FETCHING ---
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_pipeline():
     try:
@@ -45,8 +45,7 @@ def fetch_pipeline():
         df = pd.DataFrame(flat_data)
         expected_cols = ["Date", "Truck", "Status", "Odometer", "Notes", "Logged By"]
         for col in expected_cols:
-            if col not in df.columns:
-                df[col] = ""
+            if col not in df.columns: df[col] = ""
         return df
     except Exception as e:
         st.error(f"❌ Airtable Pipeline Error: {e}")
@@ -101,7 +100,6 @@ def advance_pipeline():
     record_ids = st.session_state.get("upd_records", [])
     new_status = st.session_state.upd_status
     action_notes = st.session_state.upd_notes
-    
     record_new_sample = st.session_state.get("upd_new_sample", False)
     sample_date_val = st.session_state.get("upd_sample_date", datetime.today())
     target_d_str = sample_date_val.strftime("%Y-%m-%d")
@@ -112,7 +110,6 @@ def advance_pipeline():
         
     try:
         df_pipe = fetch_pipeline()
-        
         for rec_id in record_ids:
             truck_name = df_pipe.loc[df_pipe['id'] == rec_id, 'Truck'].values[0] if not df_pipe.empty else None
 
@@ -122,8 +119,7 @@ def advance_pipeline():
                 "Date": datetime.today().strftime("%Y-%m-%d"),
                 "Logged By": st.session_state.get("role", "Unknown")
             }
-            if action_notes:
-                update_data["Notes"] = action_notes
+            if action_notes: update_data["Notes"] = action_notes
             pipeline_table.update(rec_id, update_data)
 
             # 2. Automate the Last Sample KM Profile Update
@@ -157,11 +153,9 @@ def advance_pipeline():
                         profiles_table.create({"Truck": truck_name, "Last Sample KM": int(current_km), "Last Sample Date": target_d_str})
                         
         st.toast(f"✅ {len(record_ids)} Truck(s) advanced successfully!")
-        
-        # Clear Caches
         fetch_pipeline.clear()
         fetch_truck_profiles.clear()
-        process_analytics.clear() # Clear analytics cache so the pipeline interception triggers instantly
+        process_analytics.clear() 
 
     except Exception as e:
         st.error(f"❌ Update failed: {e}")
@@ -178,7 +172,7 @@ def delete_last_row():
     except Exception as e:
         st.error(f"❌ Airtable Error: {e}")
 
-# --- 6. FILE PARSING & ANALYTICS ENGINE (CACHED) ---
+# --- 6. FILE PARSING & ANALYTICS ENGINE ---
 @st.cache_data(show_spinner=False)
 def parse_files(oil_bytes, oil_name, mileage_bytes, mileage_name):
     df_oil = pd.read_csv(io.BytesIO(oil_bytes)) if oil_name.endswith('.csv') else pd.read_excel(io.BytesIO(oil_bytes))
@@ -189,7 +183,6 @@ def parse_files(oil_bytes, oil_name, mileage_bytes, mileage_name):
 def process_analytics(df_oil, df_mileage, df_samples, df_pipeline):
     results = []
     
-    # NEW INTERCEPTOR: Get list of active trucks in the pipeline (Banks 1-4)
     active_pipeline_trucks = []
     if not df_pipeline.empty:
         active_pipeline_trucks = df_pipeline[df_pipeline["Status"] != BANKS[4]]["Truck"].tolist()
@@ -213,13 +206,11 @@ def process_analytics(df_oil, df_mileage, df_samples, df_pipeline):
                 global_parsed_dates[d_str] = parsed
 
     df_mileage_str = df_mileage.astype(str)
-    
     fleet_historical_kms = {}
     fleet_latest_kms = {}
 
     for truck in LIST_OF_TRUCKS:
         mtl_code = truck.split("(")[1].replace(")", "") 
-        
         mask_mileage = df_mileage_str.apply(lambda col: col.str.contains(mtl_code, na=False, regex=False)).any(axis=1)
         truck_row = df_mileage[mask_mileage]
         
@@ -260,8 +251,7 @@ def process_analytics(df_oil, df_mileage, df_samples, df_pipeline):
                 try:
                     sample_km = float(sample_row.iloc[0].get("Last Sample KM", 0))
                     if pd.isna(sample_km): sample_km = 0
-                except:
-                    sample_km = 0
+                except: sample_km = 0
             
         replenish_km = 0
         if "Identity No" in df_oil.columns:
@@ -304,8 +294,6 @@ def process_analytics(df_oil, df_mileage, df_samples, df_pipeline):
         if running_km < 0: running_km = 0 
         
         status = "⚪ No Baseline Data"
-        
-        # --- THE INTERCEPTOR LOGIC ---
         if truck in active_pipeline_trucks:
             status = "🔄 In Pipeline"
         elif starting_km > 0: 
@@ -324,16 +312,14 @@ def process_analytics(df_oil, df_mileage, df_samples, df_pipeline):
     return pd.DataFrame(results), fleet_historical_kms, fleet_latest_kms
 
 # --- 7. UI LAYOUT ---
-st.title("🛢️ Condition-Based Oil Analysis System")
+st.title(":material/opacity: Condition-Based Oil Analysis System")
 st.divider()
 
-# --- FETCH LIVE PIPELINE BEFORE ANALYTICS ---
-# We fetch this first so the Analytics engine knows who is already being processed
 df_pipeline = fetch_pipeline()
 
 # --- PART A: FLEET HEALTH DASHBOARDS ---
 st.subheader("📈 1. Fleet Health Analytics & Forecasting")
-st.markdown("Upload your two core tracking files. *Trucks actively in the pipeline are automatically hidden from the Overdue list to prevent double-booking.*")
+st.markdown("Upload your two core tracking files. *Trucks actively in the pipeline are automatically hidden from the Overdue list.*")
 
 c1, c2 = st.columns(2)
 with c1: file_oil = st.file_uploader("Oil Top-ups & Servicing", type=['csv', 'xlsx'])
@@ -345,7 +331,6 @@ if file_oil and file_mileage:
             df_oil, df_mileage = parse_files(file_oil.getvalue(), file_oil.name, file_mileage.getvalue(), file_mileage.name)
             df_samples = fetch_truck_profiles()
             
-            # Pass the df_pipeline into process_analytics so it intercepts active trucks
             health_df, hist_kms, latest_kms = process_analytics(df_oil, df_mileage, df_samples, df_pipeline)
             
             st.session_state.fleet_history_kms = hist_kms
@@ -353,9 +338,7 @@ if file_oil and file_mileage:
             
             st.success("✅ Fleet Health Calculated!")
             
-            # Added the 4th Tab for visibility
             t_over, t_soon, t_health, t_pipe = st.tabs(["🔴 Overdue (12,000+)", "🟡 Due Soon (10k - 12k)", "🟢 Healthy (< 10k)", "🔄 In Pipeline"])
-            
             with t_over: st.dataframe(health_df[health_df["Health"] == "🔴 Overdue"], use_container_width=True, hide_index=True)
             with t_soon: st.dataframe(health_df[health_df["Health"] == "🟡 Due Soon"], use_container_width=True, hide_index=True)
             with t_health: st.dataframe(health_df[health_df["Health"] == "🟢 Healthy"], use_container_width=True, hide_index=True)
@@ -366,7 +349,7 @@ if file_oil and file_mileage:
 
 st.divider()
 
-# --- PART B: ENTRY POINT (BULK SELECT) ---
+# --- PART B: ENTRY POINT ---
 st.subheader("📥 2. Log New Sample Requirement")
 col1, col2 = st.columns(2)
 with col1:
@@ -379,13 +362,12 @@ with col2:
 
 st.divider()
 
-# --- PART C: PIPELINE MANAGER (BULK UPGRADE) ---
+# --- PART C: PIPELINE MANAGER ---
 st.subheader("🔄 3. Advance Truck(s) in Pipeline")
 st.caption("Select a bank, check the trucks you want to move, and advance them in bulk.")
 
 if not df_pipeline.empty:
     active_df = df_pipeline[df_pipeline["Status"] != BANKS[4]]
-    
     if not active_df.empty:
         current_bank_filter = st.selectbox("1. Filter by Current Status (Bank)", BANKS[:4], key="filter_bank")
         df_filtered = active_df[active_df["Status"] == current_bank_filter].copy()
@@ -408,12 +390,10 @@ if not df_pipeline.empty:
             st.session_state.upd_records = selected_ids
             
             st.write("---")
-            
             m_col1, m_col2 = st.columns(2)
             with m_col1:
                 next_idx = min(BANKS.index(current_bank_filter) + 1, 4)
                 st.selectbox("2. Advance Selected Trucks To", BANKS, index=next_idx, key="upd_status")
-                
                 st.write("")
                 record_new_sample = st.checkbox("♻️ Record New Sample (Updates Baseline KM)", key="upd_new_sample")
                 if record_new_sample:
@@ -422,12 +402,7 @@ if not df_pipeline.empty:
             with m_col2:
                 st.text_area("Lab Results / Notes to Append", height=130, key="upd_notes")
                 
-            st.button(
-                f"🚀 Advance {len(selected_ids)} Selected Truck(s)", 
-                use_container_width=True, 
-                on_click=advance_pipeline, 
-                type="primary"
-            )
+            st.button(f"🚀 Advance {len(selected_ids)} Selected Truck(s)", use_container_width=True, on_click=advance_pipeline, type="primary")
         else:
             st.info(f"No trucks currently sitting in: {current_bank_filter}.")
     else:
@@ -463,8 +438,7 @@ if not df_pipeline.empty:
                 selected_ids = edited_df[edited_df["Select"] == True]["id"].tolist()
                 if len(selected_ids) > 0:
                     if st.button(f"🗑️ Delete {len(selected_ids)} Selected Log(s)", key=f"del_btn_{i}", type="primary"):
-                        for del_id in selected_ids:
-                            pipeline_table.delete(del_id)
+                        for del_id in selected_ids: pipeline_table.delete(del_id)
                         st.success("✅ Log(s) permanently deleted!")
                         fetch_pipeline.clear()
                         process_analytics.clear()
