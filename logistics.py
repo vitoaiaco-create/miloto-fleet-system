@@ -3,6 +3,8 @@ import pandas as pd
 from pyairtable import Api
 import re
 import io
+import itertools
+from calendar import monthrange
 from datetime import datetime
 import matplotlib.pyplot as plt
 from fpdf import FPDF
@@ -19,7 +21,7 @@ def generate_fleet():
 
 LIST_OF_TRUCKS = generate_fleet()
 
-# --- 2. FETCH WORKSHOP LOGS (RAW DATA FOR TIME-SERIES) ---
+# --- 2. FETCH WORKSHOP LOGS ---
 @st.cache_data(ttl=60)
 def get_raw_workshop_logs():
     """Fetches all workshop logs and returns a raw dataframe to allow month-by-month grouping."""
@@ -81,7 +83,6 @@ def process_mileage_data(df_mileage):
                 
                 diff = curr_v - prev_v
                 
-                # Filter out typos (max 1500km/day)
                 if 0 <= diff <= 1500:
                     m_key = curr_dt.strftime("%Y-%m")
                     
@@ -96,6 +97,18 @@ def process_mileage_data(df_mileage):
             truck_mileage.append(truck_data)
 
     return pd.DataFrame(truck_mileage), monthly_totals
+
+# --- CHART HELPER FUNCTION ---
+def add_bar_labels(ax, bars):
+    """Adds formatted text tags to the top of each bar."""
+    for bar in bars:
+        height = bar.get_height()
+        if height > 0:
+            ax.annotate(f'{height:,.0f}',
+                        xy=(bar.get_x() + bar.get_width() / 2, height),
+                        xytext=(0, 3),  # 3 points vertical offset
+                        textcoords="offset points",
+                        ha='center', va='bottom', fontsize=7, rotation=90)
 
 # --- 4. PDF GENERATOR ---
 def generate_pdf_report(df_master, monthly_totals=None):
@@ -114,17 +127,22 @@ def generate_pdf_report(df_master, monthly_totals=None):
         y_2025 = [monthly_totals.get(f"2025-{m}", 0) for m in months_labels]
         y_2026 = [monthly_totals.get(f"2026-{m}", 0) for m in months_labels]
 
-        fig, ax = plt.subplots(figsize=(10, 4))
+        fig, ax = plt.subplots(figsize=(10, 4.5))
         bar_width = 0.35
         x = range(len(months_labels))
         
-        ax.bar([i - bar_width/2 for i in x], y_2025, bar_width, label='2025', color='#2ca02c')
-        ax.bar([i + bar_width/2 for i in x], y_2026, bar_width, label='2026', color='#d62728')
+        bars1 = ax.bar([i - bar_width/2 for i in x], y_2025, bar_width, label='2025', color='#2ca02c')
+        bars2 = ax.bar([i + bar_width/2 for i in x], y_2026, bar_width, label='2026', color='#d62728')
+        
+        # Add the exact KM tags to the bars
+        add_bar_labels(ax, bars1)
+        add_bar_labels(ax, bars2)
         
         ax.set_title('2026 vs 2025 Total kms')
         ax.set_xticks(x)
         ax.set_xticklabels(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'])
         ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda val, loc: f"{int(val):,}"))
+        ax.margins(y=0.2) # Give space for the labels at the top
         ax.legend()
         plt.tight_layout()
 
@@ -132,7 +150,7 @@ def generate_pdf_report(df_master, monthly_totals=None):
         plt.savefig(img_buffer, format='png')
         img_buffer.seek(0)
         pdf.image(img_buffer, x=45, y=30, w=200)
-        pdf.ln(95) 
+        pdf.ln(105) 
 
     pdf.set_font("Helvetica", "B", 9)
     data_cols = ["Truck", "Total Trips", "Workshop Days", "Net Available Days", "Avg Days per Trip"]
@@ -221,9 +239,11 @@ if file_trips is not None:
                     
                 # B. Historical Workshop Data (Grouped by YYYY-MM)
                 ws_monthly_totals = {}
+                df_ws_truck_m = pd.DataFrame(columns=["Truck", "Month", "Workshop Days"])
                 if not df_ws_raw.empty:
                     df_ws_raw['Month'] = df_ws_raw['Date'].str[:7]
                     ws_monthly_totals = df_ws_raw.groupby(['Month', 'Truck'])['Date'].nunique().groupby('Month').sum().to_dict()
+                    df_ws_truck_m = df_ws_raw.groupby(['Truck', 'Month'])['Date'].nunique().reset_index(name='Workshop Days')
 
                 # --- PROCESS MILEAGE ---
                 monthly_totals = {}
@@ -246,7 +266,6 @@ if file_trips is not None:
                     axis=1
                 )
                 
-                # Merge historical KMS into master (used for PDF generation)
                 if not df_truck_kms.empty:
                     df_dashboard = df_dashboard.merge(df_truck_kms, on="Truck", how="left").fillna(0)
 
@@ -265,11 +284,9 @@ if file_trips is not None:
                 # --- BUILD YEARLY SUMMARY DATAFRAME (FOR TAB 2) ---
                 all_months = sorted(list(set(list(monthly_totals.keys()) + list(ws_monthly_totals.keys()) + [current_month_str])))
                 yearly_data = []
-                
                 for m in all_months:
                     kms = monthly_totals.get(m, 0)
                     ws_days = ws_monthly_totals.get(m, 0)
-                    
                     trips = current_total_trips if m == current_month_str else 0
                     net_days = current_net_days if m == current_month_str else 0
                     avg_days = current_fleet_avg if m == current_month_str else 0.0
@@ -282,13 +299,45 @@ if file_trips is not None:
                         "Net Available Days": int(net_days),
                         "Avg Days/Trip": float(avg_days)
                     })
-                    
                 df_yearly = pd.DataFrame(yearly_data)
+
+                # --- BUILD TRUCK HISTORY GRID (FOR TAB 3) ---
+                grid = pd.DataFrame(list(itertools.product(LIST_OF_TRUCKS, all_months)), columns=["Truck", "Month"])
+                
+                # Merge Melted Mileage
+                if not df_truck_kms.empty:
+                    df_kms_melt = df_truck_kms.melt(id_vars=["Truck"], var_name="Month", value_name="Mileage")
+                else:
+                    df_kms_melt = pd.DataFrame(columns=["Truck", "Month", "Mileage"])
+                    
+                df_history = grid.merge(df_kms_melt, on=["Truck", "Month"], how="left").fillna({"Mileage": 0})
+                
+                # Merge Workshop
+                df_history = df_history.merge(df_ws_truck_m, on=["Truck", "Month"], how="left").fillna({"Workshop Days": 0})
+                
+                # Add Current Month Trips
+                df_current_trips = trip_counts.copy()
+                df_current_trips["Month"] = current_month_str
+                df_history = df_history.merge(df_current_trips, on=["Truck", "Month"], how="left").fillna({"Total Trips": 0})
+                
+                # Compute Month Days dynamically
+                def get_days_in_month(m_str):
+                    try:
+                        y, m = int(m_str[:4]), int(m_str[5:7])
+                        if m_str == current_month_str and total_days_in_month != 30: 
+                            return total_days_in_month
+                        return monthrange(y, m)[1]
+                    except:
+                        return 30
+                        
+                df_history["Total Days"] = df_history["Month"].apply(get_days_in_month)
+                df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r["Total Days"] - r["Workshop Days"]), axis=1)
+                df_history["Avg Days/Trip"] = df_history.apply(lambda r: round(r["Net Available Days"] / r["Total Trips"], 2) if r["Total Trips"] > 0 else 0.0, axis=1)
 
                 # --- RENDER UI TABS ---
                 st.success("✅ Analytics Engine Complete!")
                 
-                tab1, tab2 = st.tabs(["📅 Current Month Overview", "📈 Yearly Historical Trends"])
+                tab1, tab2, tab3 = st.tabs(["📅 Current Month", "📈 Fleet Yearly Trends", "🚚 Detailed Truck History"])
                 
                 # --- TAB 1: CURRENT MONTH ---
                 with tab1:
@@ -300,7 +349,6 @@ if file_trips is not None:
                     m4.metric("Avg Days/Trip", current_fleet_avg)
                     m5.metric("Total Fleet KM", f"{int(current_total_kms):,}")
                     
-                    # Display the strictly filtered dataframe
                     st.dataframe(df_tab1, use_container_width=True, hide_index=True)
                     
                     c_btn1, c_btn2 = st.columns(2)
@@ -321,17 +369,22 @@ if file_trips is not None:
                         y_2025 = [monthly_totals.get(f"2025-{m}", 0) for m in months_labels]
                         y_2026 = [monthly_totals.get(f"2026-{m}", 0) for m in months_labels]
 
-                        fig, ax = plt.subplots(figsize=(10, 3.5))
+                        fig, ax = plt.subplots(figsize=(10, 4))
                         bar_width = 0.35
                         x = range(len(months_labels))
                         
-                        ax.bar([i - bar_width/2 for i in x], y_2025, bar_width, label='2025', color='#2ca02c')
-                        ax.bar([i + bar_width/2 for i in x], y_2026, bar_width, label='2026', color='#d62728')
+                        bars1 = ax.bar([i - bar_width/2 for i in x], y_2025, bar_width, label='2025', color='#2ca02c')
+                        bars2 = ax.bar([i + bar_width/2 for i in x], y_2026, bar_width, label='2026', color='#d62728')
+                        
+                        # Apply Data Labels to the web chart
+                        add_bar_labels(ax, bars1)
+                        add_bar_labels(ax, bars2)
                         
                         ax.set_title('2026 vs 2025 Total kms')
                         ax.set_xticks(x)
                         ax.set_xticklabels(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'])
                         ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda val, loc: f"{int(val):,}"))
+                        ax.margins(y=0.2) 
                         ax.legend()
                         st.pyplot(fig)
                     
@@ -340,5 +393,36 @@ if file_trips is not None:
                     csv_yearly = df_yearly.to_csv(index=False).encode('utf-8')
                     st.download_button(label="⬇️ Download Yearly Aggregation CSV", data=csv_yearly, file_name="yearly_fleet_aggregation.csv", mime="text/csv")
                 
+                # --- TAB 3: DETAILED TRUCK HISTORY ---
+                with tab3:
+                    st.subheader("Truck-by-Truck Historical Matrix")
+                    st.markdown("Select a metric below to view its month-by-month history for every truck.")
+                    
+                    metric_choice = st.selectbox("📊 Select Metric to View:", [
+                        "Mileage", 
+                        "Workshop Days", 
+                        "Total Trips", 
+                        "Net Available Days", 
+                        "Avg Days/Trip"
+                    ])
+                    
+                    # Pivot the data so Rows=Trucks, Columns=Months
+                    df_pivot = df_history.pivot(index="Truck", columns="Month", values=metric_choice).reset_index()
+                    df_pivot = df_pivot.fillna(0)
+                    
+                    # Clean up number formatting based on the chosen metric
+                    for c in df_pivot.columns:
+                        if c != "Truck":
+                            if metric_choice == "Avg Days/Trip":
+                                df_pivot[c] = df_pivot[c].apply(lambda x: f"{x:.2f}")
+                            else:
+                                df_pivot[c] = df_pivot[c].astype(int)
+                    
+                    st.dataframe(df_pivot, use_container_width=True, hide_index=True)
+                    
+                    csv_pivot = df_pivot.to_csv(index=False).encode('utf-8')
+                    file_safe_metric = metric_choice.replace(' ', '_').replace('/', '_').lower()
+                    st.download_button(label=f"⬇️ Download {metric_choice} Matrix CSV", data=csv_pivot, file_name=f"truck_history_{file_safe_metric}.csv", mime="text/csv")
+
     except Exception as e:
         st.error(f"❌ Could not process the files. Error: {e}")
