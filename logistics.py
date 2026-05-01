@@ -117,6 +117,7 @@ def generate_monthly_pdf(df_master, current_month_str):
     pdf.ln(10)
 
     pdf.set_font("Helvetica", "B", 9)
+    data_cols = ["Truck", "Total Trips", "Workshop Days", "Net Available Days", "Avg Days per Trip", "Current Month KM"]
     display_cols = ["Truck", "Total Trips", "WS Days", "Net Days", "Avg Days/Trip", "Current Month KM"]
     col_widths = [50, 35, 35, 35, 35, 40]
     
@@ -126,12 +127,11 @@ def generate_monthly_pdf(df_master, current_month_str):
 
     pdf.set_font("Helvetica", "", 8)
     for idx, row in df_master.iterrows():
-        pdf.cell(col_widths[0], 6, str(row["Truck"]), border=1, align="C")
-        pdf.cell(col_widths[1], 6, str(int(row["Total Trips"])), border=1, align="C")
-        pdf.cell(col_widths[2], 6, str(int(row["Workshop Days"])), border=1, align="C")
-        pdf.cell(col_widths[3], 6, str(int(row["Net Available Days"])), border=1, align="C")
-        pdf.cell(col_widths[4], 6, f'{row["Avg Days per Trip"]:.1f}', border=1, align="C")
-        pdf.cell(col_widths[5], 6, str(int(row["Current Month KM"])), border=1, align="C")
+        for i, col_name in enumerate(data_cols):
+            val = row[col_name]
+            if isinstance(val, (int, float)):
+                val = f"{val:.1f}" if "Avg" in col_name else f"{int(val)}"
+            pdf.cell(col_widths[i], 6, str(val), border=1, align="C")
         pdf.ln()
 
     return pdf.output()
@@ -196,8 +196,41 @@ def generate_yearly_pdf(df_yearly, monthly_totals):
 
     return pdf.output()
 
+def generate_history_pdf(df_pivot, metric_choice):
+    """Generates a landscape PDF for the detailed truck history matrix."""
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 10, "ZAMBEZI PORTLAND CEMENT", ln=True, align="C")
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 8, f"DETAILED TRUCK HISTORY - {metric_choice.upper()}", ln=True, align="C")
+    pdf.ln(5)
+
+    pdf.set_font("Helvetica", "B", 8)
+    cols = df_pivot.columns.tolist()
+    
+    # Calculate column widths to fit A4 Landscape perfectly (270mm usable width)
+    truck_col_w = 35
+    month_col_w = (270 - truck_col_w) / max(1, len(cols) - 1)
+    col_widths = [truck_col_w] + [month_col_w] * (len(cols) - 1)
+    
+    for i, col_name in enumerate(cols):
+        pdf.cell(col_widths[i], 8, str(col_name), border=1, align="C")
+    pdf.ln()
+
+    pdf.set_font("Helvetica", "", 7)
+    for idx, row in df_pivot.iterrows():
+        for i, col_name in enumerate(cols):
+            pdf.cell(col_widths[i], 6, str(row[col_name]), border=1, align="C")
+        pdf.ln()
+
+    return pdf.output()
+
 # --- 5. UI & FILE UPLOAD ---
 st.title("🚛 Logistics & Kilometre Dashboard")
+st.caption("🟢 App Update: v3.1 (Includes Matrix PDF & Sync Sorting)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -316,7 +349,7 @@ if file_trips is not None:
                 st.success("✅ Analytics Engine Complete!")
                 tab1, tab2, tab3 = st.tabs(["📅 Current Month", "📈 Fleet Yearly Trends", "🚚 Detailed Truck History"])
                 
-                # TAB 1
+                # --- TAB 1 ---
                 with tab1:
                     m1, m2, m3, m4, m5 = st.columns(5)
                     m1.metric("Total Trips", int(current_total_trips))
@@ -325,13 +358,21 @@ if file_trips is not None:
                     m4.metric("Avg Days/Trip", current_fleet_avg)
                     m5.metric("Total Fleet KM", f"{int(current_total_kms):,}")
                     
+                    st.write("---")
+                    st.markdown("**🎛️ Sort Data Before Generating PDF:**")
+                    sc1, sc2 = st.columns([2, 1])
+                    with sc1: sort_col_tab1 = st.selectbox("Sort Table By:", df_tab1.columns.tolist(), index=df_tab1.columns.tolist().index("Avg Days per Trip"))
+                    with sc2: sort_asc_tab1 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort1") == "Ascending"
+                    
+                    # Sort backend DF so PDF inherits it perfectly
+                    df_tab1 = df_tab1.sort_values(by=sort_col_tab1, ascending=sort_asc_tab1)
                     st.dataframe(df_tab1, use_container_width=True, hide_index=True)
                     
                     c_btn1, c_btn2 = st.columns(2)
                     with c_btn1: st.download_button("⬇️ Download Monthly CSV", data=df_tab1.to_csv(index=False).encode('utf-8'), file_name=f"logistics_{current_month_str}.csv", mime="text/csv", use_container_width=True)
                     with c_btn2: st.download_button("📄 Generate Monthly PDF Report", data=bytes(generate_monthly_pdf(df_tab1, current_month_str)), file_name=f"ZPC_Report_{current_month_str}.pdf", mime="application/pdf", use_container_width=True, type="primary")
 
-                # TAB 2
+                # --- TAB 2 ---
                 with tab2:
                     if monthly_totals:
                         months_labels = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
@@ -359,16 +400,28 @@ if file_trips is not None:
                     with c_btn3: st.download_button("⬇️ Download Yearly CSV", data=df_yearly.to_csv(index=False).encode('utf-8'), file_name="yearly_fleet.csv", mime="text/csv", use_container_width=True)
                     with c_btn4: st.download_button("📄 Generate Yearly PDF Report", data=bytes(generate_yearly_pdf(df_yearly, monthly_totals)), file_name="ZPC_Yearly_Report.pdf", mime="application/pdf", use_container_width=True, type="primary")
                 
-                # TAB 3
+                # --- TAB 3 ---
                 with tab3:
                     metric_choice = st.selectbox("📊 Select Metric to View:", ["Mileage", "Workshop Days", "Total Trips", "Net Available Days", "Avg Days/Trip"])
                     df_pivot = df_history.pivot(index="Truck", columns="Month", values=metric_choice).reset_index().fillna(0)
-                    for c in df_pivot.columns:
-                        if c != "Truck":
-                            df_pivot[c] = df_pivot[c].apply(lambda x: f"{x:.2f}") if metric_choice == "Avg Days/Trip" else df_pivot[c].astype(int)
                     
-                    st.dataframe(df_pivot, use_container_width=True, hide_index=True)
-                    st.download_button(label=f"⬇️ Download {metric_choice} Matrix CSV", data=df_pivot.to_csv(index=False).encode('utf-8'), file_name=f"truck_history.csv", mime="text/csv")
+                    st.markdown("**🎛️ Sort Data Before Generating PDF:**")
+                    sc3, sc4 = st.columns([2, 1])
+                    with sc3: sort_col_tab3 = st.selectbox("Sort Matrix By:", df_pivot.columns.tolist(), index=0)
+                    with sc4: sort_asc_tab3 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort2") == "Ascending"
+                    
+                    df_pivot = df_pivot.sort_values(by=sort_col_tab3, ascending=sort_asc_tab3)
+                    
+                    df_display = df_pivot.copy()
+                    for c in df_display.columns:
+                        if c != "Truck":
+                            df_display[c] = df_display[c].apply(lambda x: f"{x:.2f}") if metric_choice == "Avg Days/Trip" else df_display[c].astype(int)
+                    
+                    st.dataframe(df_display, use_container_width=True, hide_index=True)
+                    
+                    c_btn5, c_btn6 = st.columns(2)
+                    with c_btn5: st.download_button(label=f"⬇️ Download {metric_choice} Matrix CSV", data=df_display.to_csv(index=False).encode('utf-8'), file_name=f"truck_history.csv", mime="text/csv", use_container_width=True)
+                    with c_btn6: st.download_button(label=f"📄 Generate {metric_choice} PDF", data=bytes(generate_history_pdf(df_display, metric_choice)), file_name=f"ZPC_Matrix_{metric_choice.replace(' ', '')}.pdf", mime="application/pdf", use_container_width=True, type="primary")
 
     except Exception as e:
         st.error(f"❌ Error: {e}")
