@@ -196,7 +196,7 @@ if file_trips is not None:
                     max_date = df_raw["DOT"].max()
                     if pd.notna(max_date):
                         total_days_in_month = max_date.day
-                        current_month_str = max_date.strftime("%Y-%m") # e.g., '2026-04'
+                        current_month_str = max_date.strftime("%Y-%m")
                     else:
                         total_days_in_month = 30
                 else:
@@ -232,7 +232,7 @@ if file_trips is not None:
                     df_mil_raw = pd.read_excel(file_mileage, sheet_name='MILOTO')
                     df_truck_kms, monthly_totals = process_mileage_data(df_mil_raw)
 
-                # --- BUILD CURRENT MONTH DATAFRAME ---
+                # --- BUILD MASTER DATAFRAME (FOR PDF) ---
                 df_dashboard = pd.DataFrame({"Truck": LIST_OF_TRUCKS})
                 df_dashboard = df_dashboard.merge(trip_counts, on="Truck", how="left").fillna(0)
                 df_dashboard = df_dashboard.merge(ws_counts, on="Truck", how="left").fillna(0)
@@ -246,14 +246,23 @@ if file_trips is not None:
                     axis=1
                 )
                 
+                # Merge historical KMS into master (used for PDF generation)
                 if not df_truck_kms.empty:
                     df_dashboard = df_dashboard.merge(df_truck_kms, on="Truck", how="left").fillna(0)
-                    
-                current_net_days = df_dashboard["Net Available Days"].sum()
-                current_fleet_avg = round(current_net_days / current_total_trips, 2) if current_total_trips > 0 else 0.0
-                current_total_kms = df_dashboard[current_month_str].sum() if current_month_str in df_dashboard.columns else 0
 
-                # --- BUILD YEARLY SUMMARY DATAFRAME ---
+                # --- BUILD STRICT CURRENT MONTH DATAFRAME (FOR TAB 1) ---
+                tab1_cols = ["Truck", "Total Trips", "Workshop Days", "Net Available Days", "Avg Days per Trip"]
+                df_tab1 = df_dashboard[tab1_cols].copy()
+                if current_month_str in df_dashboard.columns:
+                    df_tab1["Current Month KM"] = df_dashboard[current_month_str].astype(int)
+                else:
+                    df_tab1["Current Month KM"] = 0
+                    
+                current_net_days = df_tab1["Net Available Days"].sum()
+                current_fleet_avg = round(current_net_days / current_total_trips, 2) if current_total_trips > 0 else 0.0
+                current_total_kms = df_tab1["Current Month KM"].sum()
+
+                # --- BUILD YEARLY SUMMARY DATAFRAME (FOR TAB 2) ---
                 all_months = sorted(list(set(list(monthly_totals.keys()) + list(ws_monthly_totals.keys()) + [current_month_str])))
                 yearly_data = []
                 
@@ -261,7 +270,6 @@ if file_trips is not None:
                     kms = monthly_totals.get(m, 0)
                     ws_days = ws_monthly_totals.get(m, 0)
                     
-                    # Apply logic for Option 3: Only populate trips/net days for the current known month
                     trips = current_total_trips if m == current_month_str else 0
                     net_days = current_net_days if m == current_month_str else 0
                     avg_days = current_fleet_avg if m == current_month_str else 0.0
@@ -287,16 +295,17 @@ if file_trips is not None:
                     st.subheader(f"Operations for {current_month_str}")
                     m1, m2, m3, m4, m5 = st.columns(5)
                     m1.metric("Total Trips", int(current_total_trips))
-                    m2.metric("Total WS Days", int(df_dashboard["Workshop Days"].sum()))
+                    m2.metric("Total WS Days", int(df_tab1["Workshop Days"].sum()))
                     m3.metric("Net Available Days", int(current_net_days))
                     m4.metric("Avg Days/Trip", current_fleet_avg)
                     m5.metric("Total Fleet KM", f"{int(current_total_kms):,}")
                     
-                    st.dataframe(df_dashboard, use_container_width=True, hide_index=True)
+                    # Display the strictly filtered dataframe
+                    st.dataframe(df_tab1, use_container_width=True, hide_index=True)
                     
                     c_btn1, c_btn2 = st.columns(2)
                     with c_btn1:
-                        csv = df_dashboard.to_csv(index=False).encode('utf-8')
+                        csv = df_tab1.to_csv(index=False).encode('utf-8')
                         st.download_button(label="⬇️ Download Monthly CSV", data=csv, file_name=f"logistics_{current_month_str}.csv", mime="text/csv", use_container_width=True)
                     with c_btn2:
                         pdf_bytes = generate_pdf_report(df_dashboard, monthly_totals)
@@ -307,7 +316,6 @@ if file_trips is not None:
                     st.subheader("Fleet-Wide Monthly Aggregation")
                     st.markdown("*(Note: Historical Trips and Net Days are tracked from the current month onward.)*")
                     
-                    # Render the Matplotlib chart directly in Streamlit
                     if monthly_totals:
                         months_labels = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
                         y_2025 = [monthly_totals.get(f"2025-{m}", 0) for m in months_labels]
