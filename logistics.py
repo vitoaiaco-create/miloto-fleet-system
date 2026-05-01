@@ -223,21 +223,18 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
     pdf.set_font("Helvetica", "B", 24)
     pdf.cell(0, 15, "ZAMBEZI PORTLAND CEMENT", ln=True, align="C")
     pdf.set_font("Helvetica", "B", 18)
-    pdf.cell(0, 10, f"2026 YEAR-TO-DATE TRACKER - {current_month_str}", ln=True, align="C")
+    pdf.cell(0, 10, f"YTD FLEET TRACKER - {current_month_str}", ln=True, align="C")
     pdf.ln(10)
 
-    # --- TWO-TIER HEADER FIX ---
     pdf.set_font("Helvetica", "B", 9)
     
-    # ROW 1
     pdf.cell(40, 8, "Truck Details", border=1, align="C")
     month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     for m in month_names:
-        pdf.cell(38, 8, m, border=1, align="C") # 9.5 * 4 = 38
-    pdf.cell(72, 8, "YTD Averages", border=1, align="C") # 18 * 4 = 72
+        pdf.cell(38, 8, m, border=1, align="C") 
+    pdf.cell(72, 8, "YTD Averages", border=1, align="C") 
     pdf.ln()
 
-    # ROW 2
     pdf.set_font("Helvetica", "B", 8)
     pdf.cell(40, 8, "Truck ID", border=1, align="C")
     for _ in range(12):
@@ -283,7 +280,7 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v5.2 (Dual-Divisor Averages & 2-Tier PDF Headers)")
+st.caption("🟢 App Update: v5.3 (Future-Proof 2027 Logic Implemented)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -386,7 +383,6 @@ if file_trips is not None:
                     })
                 df_yearly = pd.DataFrame(yearly_data)
 
-                # --- BUILD THE MASSIVE YTD TRACKER DATASET ---
                 grid = pd.DataFrame(list(itertools.product(LIST_OF_TRUCKS, all_months)), columns=["Truck", "Month"])
                 df_kms_melt = df_truck_kms.melt(id_vars=["Truck"], var_name="Month", value_name="Mileage") if not df_truck_kms.empty else pd.DataFrame(columns=["Truck", "Month", "Mileage"])
                 df_history = grid.merge(df_kms_melt, on=["Truck", "Month"], how="left").fillna({"Mileage": 0})
@@ -405,17 +401,22 @@ if file_trips is not None:
                 df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r["Total Days"] - r["Workshop Days"]), axis=1)
                 df_history["Avg Days/Trip"] = df_history.apply(lambda r: round(r["Net Available Days"] / r["Total Trips"], 2) if r["Total Trips"] > 0 else 0.0, axis=1)
 
-                df_history_2026 = df_history[df_history["Month"].str.startswith("2026")].copy()
-                months_2026_strs = [f"2026-{str(i).zfill(2)}" for i in range(1, 13)]
-                month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-                
                 curr_yr = int(current_month_str[:4])
                 curr_mo = int(current_month_str[5:7])
+
+                # --- FUTURE-PROOF DUAL-DIVISOR LOGIC ---
+                km_divisor = curr_mo if curr_yr == 2026 else (curr_mo if curr_yr > 2026 else 12)
                 
-                # --- DUAL-DIVISOR LOGIC ---
-                km_divisor = curr_mo if curr_yr == 2026 else 12
-                # Ops started in May (month 5). Number of active ops months = curr_mo - 4
-                ops_divisor = max(1, curr_mo - 4) if curr_yr == 2026 else 12
+                if curr_yr == 2026:
+                    ops_divisor = max(1, curr_mo - 4)
+                elif curr_yr > 2026:
+                    ops_divisor = curr_mo
+                else:
+                    ops_divisor = 12 
+
+                df_history_year = df_history[df_history["Month"].str.startswith(str(curr_yr))].copy()
+                months_strs = [f"{curr_yr}-{str(i).zfill(2)}" for i in range(1, 13)]
+                month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
                 
                 col_tuples = [("Truck Details", "Truck ID")]
                 for m in month_names:
@@ -430,14 +431,14 @@ if file_trips is not None:
                 df_multi = pd.DataFrame(columns=mi, index=range(len(LIST_OF_TRUCKS)))
 
                 for i, truck in enumerate(LIST_OF_TRUCKS):
-                    truck_data = df_history_2026[df_history_2026["Truck"] == truck]
+                    truck_data = df_history_year[df_history_year["Truck"] == truck]
                     df_multi.at[i, ("Truck Details", "Truck ID")] = truck
                     
                     ytd_km, ytd_trips, ytd_ws, ytd_net = 0, 0, 0, 0
                     
-                    for j, m_str in enumerate(months_2026_strs):
+                    for j, m_str in enumerate(months_strs):
                         m_name = month_names[j]
-                        m_yr = 2026
+                        m_yr = curr_yr
                         m_mo = j + 1
                         
                         row_data = truck_data[truck_data["Month"] == m_str]
@@ -473,7 +474,7 @@ if file_trips is not None:
                     df_multi.at[i, ("YTD Averages", "TRUE Avg Days/Trip")] = f"{true_avg_days_trip:.2f}"
 
                 st.success("✅ Analytics Engine Complete!")
-                tab1, tab2, tab3 = st.tabs(["📅 Current Month", "📈 Fleet Yearly Trends", "🗓️ 2026 YTD Tracker"])
+                tab1, tab2, tab3 = st.tabs(["📅 Current Month", "📈 Fleet Yearly Trends", "🗓️ YTD Tracker"])
                 
                 # --- TAB 1 ---
                 with tab1:
@@ -542,7 +543,7 @@ if file_trips is not None:
                 
                 # --- TAB 3 ---
                 with tab3:
-                    st.subheader("2026 Year-to-Date Performance Matrix")
+                    st.subheader(f"{curr_yr} Year-to-Date Performance Matrix")
                     st.caption("Scroll horizontally to view all months and YTD Averages.")
                     
                     avg_cols = [(m, "Avg Days/Trip") for m in month_names] + [("YTD Averages", "TRUE Avg Days/Trip")]
@@ -569,7 +570,7 @@ if file_trips is not None:
                     df_csv_export = df_multi.copy()
                     df_csv_export.columns = [' '.join(col).strip() for col in df_csv_export.columns.values]
                     
-                    with c_btn5: st.download_button(label="⬇️ Download YTD Matrix CSV", data=df_csv_export.to_csv(index=False).encode('utf-8'), file_name="2026_YTD_Tracker.csv", mime="text/csv", use_container_width=True)
+                    with c_btn5: st.download_button(label="⬇️ Download YTD Matrix CSV", data=df_csv_export.to_csv(index=False).encode('utf-8'), file_name=f"{curr_yr}_YTD_Tracker.csv", mime="text/csv", use_container_width=True)
                     with c_btn6: st.download_button(label="📄 Generate A2 Landscape PDF", data=bytes(generate_ytd_tracker_pdf(df_multi, current_month_str)), file_name="ZPC_YTD_Matrix.pdf", mime="application/pdf", use_container_width=True, type="primary")
 
     except Exception as e:
