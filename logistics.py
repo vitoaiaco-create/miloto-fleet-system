@@ -1,7 +1,11 @@
 import streamlit as st
 import pandas as pd
 from pyairtable import Api
-import re  # <--- Added to help clean the text
+import re
+import io
+from datetime import datetime
+import matplotlib.pyplot as plt
+from fpdf import FPDF
 
 # --- 1. FLEET SETUP ---
 def generate_fleet():
@@ -16,7 +20,7 @@ def generate_fleet():
 LIST_OF_TRUCKS = generate_fleet()
 
 # --- 2. FETCH WORKSHOP LOGS (FROM AIRTABLE) ---
-@st.cache_data(ttl=60) # Caches the data for 60 seconds to keep the app fast
+@st.cache_data(ttl=60)
 def get_workshop_downtime():
     try:
         api = Api(st.secrets["AIRTABLE_TOKEN"])
@@ -35,46 +39,164 @@ def get_workshop_downtime():
             return pd.DataFrame(columns=["Truck", "Workshop Days"])
             
         df_ws = pd.DataFrame(ws_data)
-        
-        # Count unique days each truck was logged in the workshop
         ws_counts = df_ws.groupby("Truck")["Date"].nunique().reset_index()
         ws_counts.columns = ["Truck", "Workshop Days"]
         return ws_counts
     except Exception as e:
-        st.error(f"⚠️ Could not fetch Workshop Logs from Airtable: {e}")
+        st.error(f"⚠️ Could not fetch Workshop Logs: {e}")
         return pd.DataFrame(columns=["Truck", "Workshop Days"])
 
-# --- 3. UI & FILE UPLOAD ---
-st.title("🚛 Logistics Trips Dashboard")
+# --- 3. MILEAGE PROCESSING ENGINE ---
+def process_mileage_data(df_mileage):
+    """Parses the 400+ columns of daily odometer readings to calculate monthly km diffs."""
+    dates_row = df_mileage.iloc[0].values
+    col_to_date = {}
+    
+    # Extract valid dates from Row 0
+    for i, val in enumerate(dates_row):
+        if isinstance(val, (pd.Timestamp, datetime)):
+            col_to_date[i] = val
+        elif isinstance(val, str):
+            try: col_to_date[i] = pd.to_datetime(val)
+            except: pass
+
+    # Group columns by Year-Month (e.g., '2025-01', '2026-03')
+    month_to_cols = {}
+    for col_idx, dt in col_to_date.items():
+        m_key = dt.strftime("%Y-%m")
+        if m_key not in month_to_cols: month_to_cols[m_key] = []
+        month_to_cols[m_key].append(col_idx)
+
+    sorted_months = sorted(month_to_cols.keys())
+    truck_mileage = []
+    monthly_totals = {m: 0 for m in sorted_months[1:]} 
+
+    # Process each truck's daily readings
+    for idx, row in df_mileage.iterrows():
+        truck_id_raw = str(row.iloc[0]).strip()
+        if truck_id_raw.startswith("MTL"):
+            num = truck_id_raw.replace("MTL", "")
+            std_truck = f"MILOTO-{num}(MTL{num})"
+
+            # Find the max odometer reading for each month
+            m_maxes = {}
+            for m_key in sorted_months:
+                cols = month_to_cols[m_key]
+                vals = []
+                for c in cols:
+                    try:
+                        v = float(row.iloc[c])
+                        if pd.notna(v): vals.append(v)
+                    except: pass
+                m_maxes[m_key] = max(vals) if vals else None
+
+            # Calculate km driven (Current Month Max - Previous Month Max)
+            m_diffs = {}
+            for i in range(1, len(sorted_months)):
+                prev_m = sorted_months[i-1]
+                curr_m = sorted_months[i]
+                if m_maxes[prev_m] is not None and m_maxes[curr_m] is not None:
+                    diff = max(0, m_maxes[curr_m] - m_maxes[prev_m]) # Prevent negatives
+                    m_diffs[curr_m] = diff
+                    monthly_totals[curr_m] += diff
+
+            truck_data = {"Truck": std_truck}
+            truck_data.update(m_diffs)
+            truck_mileage.append(truck_data)
+
+    return pd.DataFrame(truck_mileage), monthly_totals
+
+# --- 4. PDF GENERATOR ---
+def generate_pdf_report(df_master, monthly_totals=None):
+    """Generates the ZPC KILOMETRE & UTILIZATION REPORT using fpdf2 and matplotlib."""
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    
+    # --- HEADER ---
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 10, "ZAMBEZI PORTLAND CEMENT", ln=True, align="C")
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 8, "FLEET UTILIZATION & KILOMETRE REPORT", ln=True, align="C")
+    pdf.ln(5)
+
+    # --- BAR CHART (If mileage data exists) ---
+    if monthly_totals:
+        months_labels = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
+        y_2025 = [monthly_totals.get(f"2025-{m}", 0) for m in months_labels]
+        y_2026 = [monthly_totals.get(f"2026-{m}", 0) for m in months_labels]
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        bar_width = 0.35
+        x = range(len(months_labels))
+        
+        ax.bar([i - bar_width/2 for i in x], y_2025, bar_width, label='2025', color='#2ca02c') # Green
+        ax.bar([i + bar_width/2 for i in x], y_2026, bar_width, label='2026', color='#d62728') # Red
+        
+        ax.set_title('2026 vs 2025 Total kms')
+        ax.set_xticks(x)
+        ax.set_xticklabels(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'])
+        ax.legend()
+        plt.tight_layout()
+
+        # Save plot to memory and embed in PDF
+        img_buffer = io.BytesIO()
+        plt.savefig(img_buffer, format='png')
+        img_buffer.seek(0)
+        pdf.image(img_buffer, x=45, y=30, w=200)
+        pdf.ln(95) # Move cursor below the image
+
+    # --- MASTER DATA TABLE ---
+    pdf.set_font("Helvetica", "B", 9)
+    
+    # Define columns based on whether mileage data was merged
+    cols = ["Truck", "Total Trips", "WS Days", "Net Days", "Avg Days/Trip"]
+    km_cols = [c for c in df_master.columns if "2026-" in c or "2025-" in c][-3:] # Show last 3 months of km if available
+    cols.extend(km_cols)
+    
+    col_widths = [40, 25, 25, 25, 30] + [30] * len(km_cols)
+    
+    # Print Table Header
+    for i, col_name in enumerate(cols):
+        pdf.cell(col_widths[i], 8, col_name, border=1, align="C")
+    pdf.ln()
+
+    # Print Table Rows
+    pdf.set_font("Helvetica", "", 8)
+    for idx, row in df_master.iterrows():
+        for i, col_name in enumerate(cols):
+            val = row[col_name]
+            # Format numbers safely
+            if isinstance(val, (int, float)):
+                val = f"{val:.1f}" if "Avg" in col_name else f"{int(val)}"
+            pdf.cell(col_widths[i], 6, str(val), border=1, align="C")
+        pdf.ln()
+
+    return pdf.output()
+
+# --- 5. UI & FILE UPLOAD ---
+st.title("🚛 Logistics & Kilometre Dashboard")
 st.divider()
 
-st.markdown("Upload the **Miloto Trips** Excel/CSV file to calculate fleet performance. This dashboard automatically syncs with your **Workshop Logs** to calculate net available days.")
+st.markdown("Upload your operational files to calculate fleet performance and generate the **ZPC Monthly PDF Report**.")
 
 col1, col2 = st.columns(2)
 with col1:
-    uploaded_file = st.file_uploader("Upload Miloto Trips File (.xlsx or .csv)", type=["xlsx", "xls", "csv"])
+    file_trips = st.file_uploader("1. Upload Miloto Trips (.xlsx/.csv)", type=["xlsx", "xls", "csv"])
 with col2:
-    st.write("") 
-    st.write("") 
-    st.info("📅 Available days are calculated automatically based on the latest trip date in your uploaded file.")
+    file_mileage = st.file_uploader("2. Upload Miloto Mileage File (.xlsx) (Optional for km Report)", type=["xlsx", "xls"])
 
-# --- 4. ANALYTICS LOGIC ---
-if uploaded_file is not None:
+if file_trips is not None:
     try:
-        # Read the file
-        if uploaded_file.name.endswith('.csv'):
-            df_raw = pd.read_csv(uploaded_file)
-        else:
-            df_raw = pd.read_excel(uploaded_file)
+        # Read Trips
+        df_raw = pd.read_csv(file_trips) if file_trips.name.endswith('.csv') else pd.read_excel(file_trips)
             
-        # Ensure the Identity column exists
         if "Identity" not in df_raw.columns:
-            st.error("❌ The uploaded file must contain an 'Identity' column to count the trucks.")
+            st.error("❌ The uploaded trips file must contain an 'Identity' column.")
         else:
-            with st.spinner("Crunching data and syncing with Airtable Workshop Logs..."):
+            with st.spinner("Crunching data and syncing with Airtable..."):
                 
-                # --- NEW: NORMALIZE IDENTITY COLUMN ---
-                # This fixes errors where staff typed "MTL108(MILOTO-108)" instead of "MILOTO-108(MTL108)"
+                # --- NORMALIZE IDENTITY COLUMN (Fixes inverted formats) ---
                 def clean_identity(val):
                     val = str(val).strip()
                     if val.startswith("MTL") and "(MILOTO-" in val:
@@ -83,22 +205,14 @@ if uploaded_file is not None:
                     return val
                 
                 df_raw["Identity"] = df_raw["Identity"].apply(clean_identity)
-                # --------------------------------------
 
                 # --- AUTOMATICALLY CALCULATE AVAILABLE DAYS ---
                 if "DOT" in df_raw.columns:
                     df_raw["DOT"] = pd.to_datetime(df_raw["DOT"], format="%d-%m-%Y", errors="coerce")
                     max_date = df_raw["DOT"].max()
-                    
-                    if pd.notna(max_date):
-                        total_days_in_month = max_date.day
-                    else:
-                        st.warning("⚠️ Could not read dates in 'DOT' column. Defaulting to 30 days.")
-                        total_days_in_month = 30
+                    total_days_in_month = max_date.day if pd.notna(max_date) else 30
                 else:
-                    st.warning("⚠️ 'DOT' column not found in the uploaded file. Defaulting to 30 days.")
                     total_days_in_month = 30
-                # ---------------------------------------------------
                 
                 # 1. Filter out externals, 30, 48, and 107
                 df_miloto = df_raw[df_raw["Identity"].isin(LIST_OF_TRUCKS)]
@@ -112,8 +226,6 @@ if uploaded_file is not None:
                 
                 # 4. Build the final Dashboard DataFrame
                 df_dashboard = pd.DataFrame({"Truck": LIST_OF_TRUCKS})
-                
-                # Merge the trips and workshop days into the master list
                 df_dashboard = df_dashboard.merge(trip_counts, on="Truck", how="left").fillna(0)
                 df_dashboard = df_dashboard.merge(df_workshop, on="Truck", how="left").fillna(0)
                 
@@ -123,41 +235,53 @@ if uploaded_file is not None:
                 
                 # 5. Calculations
                 df_dashboard["Total Days Available"] = total_days_in_month
-                
-                # Net Available Days = Total - Workshop
-                df_dashboard["Net Available Days"] = df_dashboard["Total Days Available"] - df_dashboard["Workshop Days"]
-                df_dashboard["Net Available Days"] = df_dashboard["Net Available Days"].apply(lambda x: max(x, 0))
-                
-                # Average Days per Trip
+                df_dashboard["Net Available Days"] = df_dashboard.apply(lambda row: max(row["Total Days Available"] - row["Workshop Days"], 0), axis=1)
                 df_dashboard["Avg Days per Trip"] = df_dashboard.apply(
                     lambda row: round(row["Net Available Days"] / row["Total Trips"], 2) if row["Total Trips"] > 0 else 0.0,
                     axis=1
                 )
                 
-                # --- 6. DISPLAY DASHBOARD ---
-                st.success("✅ Dashboard Generated Successfully!")
+                # --- PROCESS MILEAGE (IF UPLOADED) ---
+                monthly_totals = None
+                if file_mileage is not None:
+                    df_mil_raw = pd.read_excel(file_mileage, sheet_name='MILOTO')
+                    df_truck_kms, monthly_totals = process_mileage_data(df_mil_raw)
+                    # Merge KMS into the master dashboard
+                    df_dashboard = df_dashboard.merge(df_truck_kms, on="Truck", how="left").fillna(0)
+
+                # --- DISPLAY DASHBOARD ---
+                st.success("✅ Analytics Engine Complete!")
                 
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Total Miloto Trips", df_dashboard["Total Trips"].sum())
-                m2.metric("Active Trucks (1+ Trip)", len(df_dashboard[df_dashboard["Total Trips"] > 0]))
-                m3.metric("Total Workshop Days", df_dashboard["Workshop Days"].sum())
+                m2.metric("Active Trucks", len(df_dashboard[df_dashboard["Total Trips"] > 0]))
+                m3.metric("Total WS Days", df_dashboard["Workshop Days"].sum())
                 
-                total_net_days = df_dashboard["Net Available Days"].sum()
-                total_fleet_trips = df_dashboard["Total Trips"].sum()
-                fleet_avg = round(total_net_days / total_fleet_trips, 2) if total_fleet_trips > 0 else 0.0
-                m4.metric("Fleet Avg Days/Trip", fleet_avg)
+                total_net = df_dashboard["Net Available Days"].sum()
+                total_trips = df_dashboard["Total Trips"].sum()
+                m4.metric("Fleet Avg Days/Trip", round(total_net / total_trips, 2) if total_trips > 0 else 0.0)
                 
                 st.divider()
-                st.subheader("📊 Individual Truck Performance")
+                st.subheader("📊 Fleet Performance Table")
                 st.dataframe(df_dashboard, use_container_width=True, hide_index=True)
                 
-                csv = df_dashboard.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="⬇️ Download Dashboard as CSV",
-                    data=csv,
-                    file_name=f"logistics_dashboard.csv",
-                    mime="text/csv",
-                )
+                # --- GENERATE EXPORTS ---
+                c_btn1, c_btn2 = st.columns(2)
+                
+                with c_btn1:
+                    csv = df_dashboard.to_csv(index=False).encode('utf-8')
+                    st.download_button(label="⬇️ Download CSV", data=csv, file_name="logistics_dashboard.csv", mime="text/csv", use_container_width=True)
+                
+                with c_btn2:
+                    pdf_bytes = generate_pdf_report(df_dashboard, monthly_totals)
+                    st.download_button(
+                        label="📄 Generate ZPC PDF Report",
+                        data=bytes(pdf_bytes),
+                        file_name=f"ZPC_Report_{datetime.today().strftime('%b_%Y')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        type="primary"
+                    )
                 
     except Exception as e:
-        st.error(f"❌ Could not process the file. Error: {e}")
+        st.error(f"❌ Could not process the files. Error: {e}")
