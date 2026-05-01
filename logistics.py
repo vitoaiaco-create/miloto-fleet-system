@@ -228,6 +228,7 @@ def generate_history_pdf(df_pivot, metric_choice):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
+st.caption("🟢 App Update: v4.0 (Historical Trip Aggregation Built-In)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -249,6 +250,7 @@ if file_trips is not None:
                     return val
                 df_raw["Identity"] = df_raw["Identity"].apply(clean_identity)
 
+                # --- ADVANCED DATE PARSING FOR HISTORICAL TRIPS ---
                 current_month_str = datetime.today().strftime("%Y-%m")
                 if "DOT" in df_raw.columns:
                     df_raw["DOT"] = pd.to_datetime(df_raw["DOT"], format="%d-%m-%Y", errors="coerce")
@@ -256,11 +258,23 @@ if file_trips is not None:
                     if pd.notna(max_date):
                         total_days_in_month = max_date.day
                         current_month_str = max_date.strftime("%Y-%m")
-                    else: total_days_in_month = 30
-                else: total_days_in_month = 30
+                        # Tag every single row with its specific month for historical grouping
+                        df_raw["Month_Str"] = df_raw["DOT"].dt.strftime("%Y-%m")
+                    else: 
+                        total_days_in_month = 30
+                        df_raw["Month_Str"] = current_month_str
+                else: 
+                    total_days_in_month = 30
+                    df_raw["Month_Str"] = current_month_str
                 
                 df_miloto = df_raw[df_raw["Identity"].isin(LIST_OF_TRUCKS)]
-                trip_counts = df_miloto["Identity"].value_counts().reset_index()
+                
+                # Group all historical trips by month and truck
+                monthly_trip_counts = df_miloto.groupby(['Month_Str', 'Identity']).size().reset_index(name='Total Trips')
+                
+                # Isolate the Current Month Trips
+                df_current_trips_raw = df_miloto[df_miloto["Month_Str"] == current_month_str]
+                trip_counts = df_current_trips_raw["Identity"].value_counts().reset_index()
                 trip_counts.columns = ["Truck", "Total Trips"]
                 current_total_trips = trip_counts["Total Trips"].sum()
                 
@@ -299,6 +313,7 @@ if file_trips is not None:
                 if not df_truck_kms.empty:
                     df_dashboard = df_dashboard.merge(df_truck_kms, on="Truck", how="left").fillna(0)
 
+                # FOR TAB 1
                 tab1_cols = ["Truck", "Total Trips", "Workshop Days", "Net Available Days", "Avg Days per Trip"]
                 df_tab1 = df_dashboard[tab1_cols].copy()
                 df_tab1["Current Month KM"] = df_dashboard[current_month_str].astype(int) if current_month_str in df_dashboard.columns else 0
@@ -307,27 +322,34 @@ if file_trips is not None:
                 current_fleet_avg = round(current_net_days / current_total_trips, 2) if current_total_trips > 0 else 0.0
                 current_total_kms = df_tab1["Current Month KM"].sum()
 
-                all_months = sorted(list(set(list(monthly_totals.keys()) + list(ws_monthly_totals.keys()) + [current_month_str])))
+                # FOR TAB 2
+                # Identify all months that have any data across the three data sources
+                all_months = sorted(list(set(list(monthly_totals.keys()) + list(ws_monthly_totals.keys()) + list(monthly_trip_counts['Month_Str'].unique()) + [current_month_str])))
+                
                 yearly_data = []
                 for m in all_months:
+                    m_trips = monthly_trip_counts[monthly_trip_counts['Month_Str'] == m]['Total Trips'].sum()
+                    
                     yearly_data.append({
                         "Month": m,
                         "Total Mileage (km)": f"{int(monthly_totals.get(m, 0)):,}",
-                        "Total Trips": int(current_total_trips if m == current_month_str else 0),
+                        "Total Trips": int(m_trips),
                         "Workshop Days": int(ws_monthly_totals.get(m, 0)),
-                        "Net Available Days": int(current_net_days if m == current_month_str else 0),
-                        "Avg Days/Trip": float(current_fleet_avg if m == current_month_str else 0.0)
+                        # Approximating Historical Net Days logic here based on historical month length
+                        "Net Available Days": max(0, (monthrange(int(m[:4]), int(m[5:7]))[1] * len(LIST_OF_TRUCKS)) - ws_monthly_totals.get(m, 0)) if m != current_month_str else int(current_net_days),
+                        "Avg Days/Trip": round(max(0, (monthrange(int(m[:4]), int(m[5:7]))[1] * len(LIST_OF_TRUCKS)) - ws_monthly_totals.get(m, 0)) / m_trips, 2) if m_trips > 0 else 0.0
                     })
                 df_yearly = pd.DataFrame(yearly_data)
 
+                # FOR TAB 3
                 grid = pd.DataFrame(list(itertools.product(LIST_OF_TRUCKS, all_months)), columns=["Truck", "Month"])
                 df_kms_melt = df_truck_kms.melt(id_vars=["Truck"], var_name="Month", value_name="Mileage") if not df_truck_kms.empty else pd.DataFrame(columns=["Truck", "Month", "Mileage"])
                 df_history = grid.merge(df_kms_melt, on=["Truck", "Month"], how="left").fillna({"Mileage": 0})
                 df_history = df_history.merge(df_ws_truck_m, on=["Truck", "Month"], how="left").fillna({"Workshop Days": 0})
                 
-                df_current_trips = trip_counts.copy()
-                df_current_trips["Month"] = current_month_str
-                df_history = df_history.merge(df_current_trips, on=["Truck", "Month"], how="left").fillna({"Total Trips": 0})
+                # Merge the true historical trips data we calculated
+                df_historical_trips_renamed = monthly_trip_counts.rename(columns={"Identity": "Truck", "Month_Str": "Month"})
+                df_history = df_history.merge(df_historical_trips_renamed, on=["Truck", "Month"], how="left").fillna({"Total Trips": 0})
                 
                 def get_days_in_month(m_str):
                     try:
@@ -339,9 +361,11 @@ if file_trips is not None:
                 df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r["Total Days"] - r["Workshop Days"]), axis=1)
                 df_history["Avg Days/Trip"] = df_history.apply(lambda r: round(r["Net Available Days"] / r["Total Trips"], 2) if r["Total Trips"] > 0 else 0.0, axis=1)
 
+                # RENDER UI
                 st.success("✅ Analytics Engine Complete!")
                 tab1, tab2, tab3 = st.tabs(["📅 Current Month", "📈 Fleet Yearly Trends", "🚚 Detailed Truck History"])
                 
+                # --- TAB 1 ---
                 with tab1:
                     m1, m2, m3, m4, m5 = st.columns(5)
                     m1.metric("Total Trips", int(current_total_trips))
@@ -363,6 +387,7 @@ if file_trips is not None:
                     with c_btn1: st.download_button("⬇️ Download Monthly CSV", data=df_tab1.to_csv(index=False).encode('utf-8'), file_name=f"logistics_{current_month_str}.csv", mime="text/csv", use_container_width=True)
                     with c_btn2: st.download_button("📄 Generate Monthly PDF Report", data=bytes(generate_monthly_pdf(df_tab1, current_month_str)), file_name=f"ZPC_Report_{current_month_str}.pdf", mime="application/pdf", use_container_width=True, type="primary")
 
+                # --- TAB 2 ---
                 with tab2:
                     if monthly_totals:
                         months_labels = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
@@ -390,6 +415,7 @@ if file_trips is not None:
                     with c_btn3: st.download_button("⬇️ Download Yearly CSV", data=df_yearly.to_csv(index=False).encode('utf-8'), file_name="yearly_fleet.csv", mime="text/csv", use_container_width=True)
                     with c_btn4: st.download_button("📄 Generate Yearly PDF Report", data=bytes(generate_yearly_pdf(df_yearly, monthly_totals)), file_name="ZPC_Yearly_Report.pdf", mime="application/pdf", use_container_width=True, type="primary")
                 
+                # --- TAB 3 ---
                 with tab3:
                     metric_choice = st.selectbox("📊 Select Metric to View:", ["Mileage", "Workshop Days", "Total Trips", "Net Available Days", "Avg Days/Trip"])
                     df_pivot = df_history.pivot(index="Truck", columns="Month", values=metric_choice).reset_index().fillna(0)
