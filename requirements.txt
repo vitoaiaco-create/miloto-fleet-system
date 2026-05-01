@@ -3,3 +3,5 @@ pandas
 plotly
 openpyxl
 pyairtable
+fpdf2
+matplotlib
