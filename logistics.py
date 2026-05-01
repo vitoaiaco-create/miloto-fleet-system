@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from pyairtable import Api
+import re  # <--- Added to help clean the text
 
 # --- 1. FLEET SETUP ---
 def generate_fleet():
@@ -53,7 +54,6 @@ col1, col2 = st.columns(2)
 with col1:
     uploaded_file = st.file_uploader("Upload Miloto Trips File (.xlsx or .csv)", type=["xlsx", "xls", "csv"])
 with col2:
-    # Adding a clean UI placeholder to let the user know automation is active
     st.write("") 
     st.write("") 
     st.info("📅 Available days are calculated automatically based on the latest trip date in your uploaded file.")
@@ -73,11 +73,21 @@ if uploaded_file is not None:
         else:
             with st.spinner("Crunching data and syncing with Airtable Workshop Logs..."):
                 
-                # --- NEW: AUTOMATICALLY CALCULATE AVAILABLE DAYS ---
+                # --- NEW: NORMALIZE IDENTITY COLUMN ---
+                # This fixes errors where staff typed "MTL108(MILOTO-108)" instead of "MILOTO-108(MTL108)"
+                def clean_identity(val):
+                    val = str(val).strip()
+                    if val.startswith("MTL") and "(MILOTO-" in val:
+                        num = val.split('(')[0].replace('MTL', '')
+                        return f"MILOTO-{num}(MTL{num})"
+                    return val
+                
+                df_raw["Identity"] = df_raw["Identity"].apply(clean_identity)
+                # --------------------------------------
+
+                # --- AUTOMATICALLY CALCULATE AVAILABLE DAYS ---
                 if "DOT" in df_raw.columns:
-                    # Convert the DOT column to actual datetime objects
                     df_raw["DOT"] = pd.to_datetime(df_raw["DOT"], format="%d-%m-%Y", errors="coerce")
-                    # Find the maximum valid date in the entire file
                     max_date = df_raw["DOT"].max()
                     
                     if pd.notna(max_date):
@@ -100,7 +110,7 @@ if uploaded_file is not None:
                 # 3. Pull Workshop Days from Airtable
                 df_workshop = get_workshop_downtime()
                 
-                # 4. Build the final Dashboard DataFrame (Ensure ALL valid trucks are listed)
+                # 4. Build the final Dashboard DataFrame
                 df_dashboard = pd.DataFrame({"Truck": LIST_OF_TRUCKS})
                 
                 # Merge the trips and workshop days into the master list
@@ -114,7 +124,7 @@ if uploaded_file is not None:
                 # 5. Calculations
                 df_dashboard["Total Days Available"] = total_days_in_month
                 
-                # Net Available Days = Total - Workshop (preventing negative numbers)
+                # Net Available Days = Total - Workshop
                 df_dashboard["Net Available Days"] = df_dashboard["Total Days Available"] - df_dashboard["Workshop Days"]
                 df_dashboard["Net Available Days"] = df_dashboard["Net Available Days"].apply(lambda x: max(x, 0))
                 
@@ -127,25 +137,20 @@ if uploaded_file is not None:
                 # --- 6. DISPLAY DASHBOARD ---
                 st.success("✅ Dashboard Generated Successfully!")
                 
-                # Top Level Summary Metrics
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Total Miloto Trips", df_dashboard["Total Trips"].sum())
                 m2.metric("Active Trucks (1+ Trip)", len(df_dashboard[df_dashboard["Total Trips"] > 0]))
                 m3.metric("Total Workshop Days", df_dashboard["Workshop Days"].sum())
                 
-                # Calculate Fleet Average safely
                 total_net_days = df_dashboard["Net Available Days"].sum()
                 total_fleet_trips = df_dashboard["Total Trips"].sum()
                 fleet_avg = round(total_net_days / total_fleet_trips, 2) if total_fleet_trips > 0 else 0.0
                 m4.metric("Fleet Avg Days/Trip", fleet_avg)
                 
                 st.divider()
-                
-                # Display the full table
                 st.subheader("📊 Individual Truck Performance")
                 st.dataframe(df_dashboard, use_container_width=True, hide_index=True)
                 
-                # Provide a quick download button for the analytics
                 csv = df_dashboard.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="⬇️ Download Dashboard as CSV",
