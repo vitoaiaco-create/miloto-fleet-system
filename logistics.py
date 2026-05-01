@@ -216,8 +216,6 @@ def generate_yearly_pdf(df_yearly, monthly_totals):
     return pdf.output()
 
 def generate_ytd_tracker_pdf(df_multi, current_month_str):
-    """Outputs the massive 53-column matrix onto a custom A2-sized Landscape PDF."""
-    # Using explicit dimensions in mm for A2 Landscape (594 wide x 420 tall)
     pdf = FPDF(orientation="L", unit="mm", format=(420, 594))
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -228,28 +226,35 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
     pdf.cell(0, 10, f"2026 YEAR-TO-DATE TRACKER - {current_month_str}", ln=True, align="C")
     pdf.ln(10)
 
-    # Flatten headers for PDF printing
+    # --- TWO-TIER HEADER FIX ---
     pdf.set_font("Helvetica", "B", 9)
-    headers = []
-    col_widths = []
     
-    for col in df_multi.columns:
-        if col[0] == "Truck Details":
-            headers.append("Truck ID")
-            col_widths.append(40) # Truck name width
-        elif col[0] == "YTD Averages":
-            headers.append(f"YTD {col[1]}")
-            col_widths.append(18) # Average columns width
-        else:
-            headers.append(f"{col[0]} {col[1]}")
-            col_widths.append(9.5) # The 48 sub-metrics
-            
-    for i, h in enumerate(headers):
-        # Multi-line cell for very narrow headers
-        pdf.cell(col_widths[i], 12, h, border=1, align="C")
+    # ROW 1
+    pdf.cell(40, 8, "Truck Details", border=1, align="C")
+    month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    for m in month_names:
+        pdf.cell(38, 8, m, border=1, align="C") # 9.5 * 4 = 38
+    pdf.cell(72, 8, "YTD Averages", border=1, align="C") # 18 * 4 = 72
     pdf.ln()
 
-    pdf.set_font("Helvetica", "", 8)
+    # ROW 2
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.cell(40, 8, "Truck ID", border=1, align="C")
+    for _ in range(12):
+        pdf.cell(9.5, 8, "KM", border=1, align="C")
+        pdf.cell(9.5, 8, "Trp", border=1, align="C")
+        pdf.cell(9.5, 8, "WS", border=1, align="C")
+        pdf.cell(9.5, 8, "Avg", border=1, align="C")
+        
+    pdf.cell(18, 8, "KM/mo", border=1, align="C")
+    pdf.cell(18, 8, "Trips/mo", border=1, align="C")
+    pdf.cell(18, 8, "WS/mo", border=1, align="C")
+    pdf.cell(18, 8, "Days/Trip", border=1, align="C")
+    pdf.ln()
+
+    pdf.set_font("Helvetica", "", 7)
+    col_widths = [40] + [9.5]*48 + [18]*4
+    
     for idx, row in df_multi.iterrows():
         for i, col in enumerate(df_multi.columns):
             val = str(row[col])
@@ -278,7 +283,7 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v5.1 (A2 PDF Fix & Typography Upgrade)")
+st.caption("🟢 App Update: v5.2 (Dual-Divisor Averages & 2-Tier PDF Headers)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -381,6 +386,7 @@ if file_trips is not None:
                     })
                 df_yearly = pd.DataFrame(yearly_data)
 
+                # --- BUILD THE MASSIVE YTD TRACKER DATASET ---
                 grid = pd.DataFrame(list(itertools.product(LIST_OF_TRUCKS, all_months)), columns=["Truck", "Month"])
                 df_kms_melt = df_truck_kms.melt(id_vars=["Truck"], var_name="Month", value_name="Mileage") if not df_truck_kms.empty else pd.DataFrame(columns=["Truck", "Month", "Mileage"])
                 df_history = grid.merge(df_kms_melt, on=["Truck", "Month"], how="left").fillna({"Mileage": 0})
@@ -405,6 +411,11 @@ if file_trips is not None:
                 
                 curr_yr = int(current_month_str[:4])
                 curr_mo = int(current_month_str[5:7])
+                
+                # --- DUAL-DIVISOR LOGIC ---
+                km_divisor = curr_mo if curr_yr == 2026 else 12
+                # Ops started in May (month 5). Number of active ops months = curr_mo - 4
+                ops_divisor = max(1, curr_mo - 4) if curr_yr == 2026 else 12
                 
                 col_tuples = [("Truck Details", "Truck ID")]
                 for m in month_names:
@@ -454,12 +465,11 @@ if file_trips is not None:
                                 df_multi.at[i, (m_name, "WS Days")] = 0
                                 df_multi.at[i, (m_name, "Avg Days/Trip")] = "0.00"
 
-                    divisor = curr_mo if curr_yr == 2026 else 12
                     true_avg_days_trip = ytd_net / ytd_trips if ytd_trips > 0 else 0.0
                     
-                    df_multi.at[i, ("YTD Averages", "Avg KM/mo")] = f"{ytd_km/divisor:,.0f}" if divisor > 0 else "0"
-                    df_multi.at[i, ("YTD Averages", "Avg Trips/mo")] = f"{ytd_trips/divisor:.1f}" if divisor > 0 else "0.0"
-                    df_multi.at[i, ("YTD Averages", "Avg WS/mo")] = f"{ytd_ws/divisor:.1f}" if divisor > 0 else "0.0"
+                    df_multi.at[i, ("YTD Averages", "Avg KM/mo")] = f"{ytd_km/km_divisor:,.0f}" if km_divisor > 0 else "0"
+                    df_multi.at[i, ("YTD Averages", "Avg Trips/mo")] = f"{ytd_trips/ops_divisor:.1f}" if ops_divisor > 0 else "0.0"
+                    df_multi.at[i, ("YTD Averages", "Avg WS/mo")] = f"{ytd_ws/ops_divisor:.1f}" if ops_divisor > 0 else "0.0"
                     df_multi.at[i, ("YTD Averages", "TRUE Avg Days/Trip")] = f"{true_avg_days_trip:.2f}"
 
                 st.success("✅ Analytics Engine Complete!")
