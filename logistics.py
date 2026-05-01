@@ -279,7 +279,6 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
     return pdf.output()
 
 def generate_destinations_pdf(df_dest, current_month_str):
-    """Generates the PDF for the 4th Tab: Destinations."""
     pdf = FPDF(orientation="L", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -292,7 +291,6 @@ def generate_destinations_pdf(df_dest, current_month_str):
 
     pdf.set_font("Helvetica", "B", 9)
     cols = ["Truck", "Month KM", "Total Trips", "WS Days", "Destination Breakdown"]
-    # Provide massive space for the destination string
     col_widths = [40, 25, 25, 25, 155]
     
     for i, col_name in enumerate(cols):
@@ -301,7 +299,6 @@ def generate_destinations_pdf(df_dest, current_month_str):
 
     pdf.set_font("Helvetica", "", 8)
     for idx, row in df_dest.iterrows():
-        # Store current X and Y to draw a proper border around MultiCell
         x_start = pdf.get_x()
         y_start = pdf.get_y()
         
@@ -310,7 +307,6 @@ def generate_destinations_pdf(df_dest, current_month_str):
         pdf.cell(col_widths[2], 8, str(row["Total Trips"]), border=1, align="C")
         pdf.cell(col_widths[3], 8, str(row["Workshop Days"]), border=1, align="C")
         
-        # Use MultiCell for destinations in case the string is extremely long
         pdf.set_xy(x_start + sum(col_widths[:4]), y_start)
         pdf.multi_cell(col_widths[4], 8, str(row["Destination Breakdown"]), border=1, align="L")
         
@@ -318,7 +314,7 @@ def generate_destinations_pdf(df_dest, current_month_str):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v8.0 (4th Tab: Destination Analytics Enabled)")
+st.caption("🟢 App Update: v8.1 (Destination Numeric Sorting Fix)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -363,8 +359,6 @@ if file_trips is not None:
                 trip_counts.columns = ["Truck", "Total Trips"]
                 current_total_trips = trip_counts["Total Trips"].sum()
                 
-                # --- DESTINATION AGGREGATOR ---
-                # Look for common destination column names
                 dest_col_name = None
                 for col in ["Destination", "Location", "Site", "Route", "Customer", "To"]:
                     if col in df_current_trips_raw.columns:
@@ -376,9 +370,7 @@ if file_trips is not None:
                     for truck in LIST_OF_TRUCKS:
                         truck_trips = df_current_trips_raw[df_current_trips_raw["Identity"] == truck]
                         if not truck_trips.empty:
-                            # Count occurrences of each destination
                             dest_counts = truck_trips[dest_col_name].value_counts()
-                            # Format as: "Ndola: 4 | Lusaka: 2"
                             dest_str = " | ".join([f"{str(k).title()}: {v}" for k, v in dest_counts.items()])
                             dest_breakdown_dict[truck] = dest_str
                         else:
@@ -680,11 +672,22 @@ if file_trips is not None:
                     
                     st.write("---")
                     sc5, sc6 = st.columns([2, 1])
-                    with sc5: sort_col_tab4 = st.selectbox("Sort Table By:", ["Total Trips", "Current Month KM", "Truck"], index=0, key="sort4_col")
+                    with sc5: sort_col_tab4 = st.selectbox("Sort Table By:", ["Total Trips", "Current Month KM", "Workshop Days", "Truck"], index=0, key="sort4_col")
                     with sc6: sort_asc_tab4 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort4_order") == "Ascending"
                     
-                    df_tab4 = df_tab4.sort_values(by=sort_col_tab4, ascending=sort_asc_tab4)
+                    # STRICT NUMERIC ENFORCEMENT BEFORE SORTING
+                    df_tab4["Total Trips"] = pd.to_numeric(df_tab4["Total Trips"], errors='coerce').fillna(0)
+                    df_tab4["Current Month KM"] = pd.to_numeric(df_tab4["Current Month KM"], errors='coerce').fillna(0)
+                    df_tab4["Workshop Days"] = pd.to_numeric(df_tab4["Workshop Days"], errors='coerce').fillna(0)
+
+                    # Sort and physically lock the index order for the PDF
+                    df_tab4 = df_tab4.sort_values(by=sort_col_tab4, ascending=sort_asc_tab4).reset_index(drop=True)
                     
+                    # Clean floats back to ints for display
+                    df_tab4["Total Trips"] = df_tab4["Total Trips"].astype(int)
+                    df_tab4["Current Month KM"] = df_tab4["Current Month KM"].astype(int)
+                    df_tab4["Workshop Days"] = df_tab4["Workshop Days"].astype(int)
+
                     st.dataframe(df_tab4, use_container_width=True, hide_index=True)
                     
                     c_btn7, c_btn8 = st.columns(2)
