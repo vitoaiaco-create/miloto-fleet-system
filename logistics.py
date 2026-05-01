@@ -278,9 +278,47 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
 
     return pdf.output()
 
+def generate_destinations_pdf(df_dest, current_month_str):
+    """Generates the PDF for the 4th Tab: Destinations."""
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 10, "ZAMBEZI PORTLAND CEMENT", ln=True, align="C")
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 8, f"MONTHLY DESTINATION ANALYTICS - {current_month_str}", ln=True, align="C")
+    pdf.ln(5)
+
+    pdf.set_font("Helvetica", "B", 9)
+    cols = ["Truck", "Month KM", "Total Trips", "WS Days", "Destination Breakdown"]
+    # Provide massive space for the destination string
+    col_widths = [40, 25, 25, 25, 155]
+    
+    for i, col_name in enumerate(cols):
+        pdf.cell(col_widths[i], 8, str(col_name), border=1, align="C")
+    pdf.ln()
+
+    pdf.set_font("Helvetica", "", 8)
+    for idx, row in df_dest.iterrows():
+        # Store current X and Y to draw a proper border around MultiCell
+        x_start = pdf.get_x()
+        y_start = pdf.get_y()
+        
+        pdf.cell(col_widths[0], 8, str(row["Truck"]), border=1, align="C")
+        pdf.cell(col_widths[1], 8, str(row["Current Month KM"]), border=1, align="C")
+        pdf.cell(col_widths[2], 8, str(row["Total Trips"]), border=1, align="C")
+        pdf.cell(col_widths[3], 8, str(row["Workshop Days"]), border=1, align="C")
+        
+        # Use MultiCell for destinations in case the string is extremely long
+        pdf.set_xy(x_start + sum(col_widths[:4]), y_start)
+        pdf.multi_cell(col_widths[4], 8, str(row["Destination Breakdown"]), border=1, align="L")
+        
+    return pdf.output()
+
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v7.0 (Tri-Divisor Logic & Mathematical Segregation)")
+st.caption("🟢 App Update: v8.0 (4th Tab: Destination Analytics Enabled)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -293,7 +331,7 @@ if file_trips is not None:
         if "Identity" not in df_raw.columns:
             st.error("❌ The uploaded trips file must contain an 'Identity' column.")
         else:
-            with st.spinner("Crunching massive historical data arrays..."):
+            with st.spinner("Crunching massive historical data arrays & geographics..."):
                 def clean_identity(val):
                     val = str(val).strip()
                     if val.startswith("MTL") and "(MILOTO-" in val:
@@ -320,10 +358,34 @@ if file_trips is not None:
                 df_miloto = df_raw[df_raw["Identity"].isin(LIST_OF_TRUCKS)]
                 monthly_trip_counts = df_miloto.groupby(['Month_Str', 'Identity']).size().reset_index(name='Total Trips')
                 
-                df_current_trips_raw = df_miloto[df_miloto["Month_Str"] == current_month_str]
+                df_current_trips_raw = df_miloto[df_miloto["Month_Str"] == current_month_str].copy()
                 trip_counts = df_current_trips_raw["Identity"].value_counts().reset_index()
                 trip_counts.columns = ["Truck", "Total Trips"]
                 current_total_trips = trip_counts["Total Trips"].sum()
+                
+                # --- DESTINATION AGGREGATOR ---
+                # Look for common destination column names
+                dest_col_name = None
+                for col in ["Destination", "Location", "Site", "Route", "Customer", "To"]:
+                    if col in df_current_trips_raw.columns:
+                        dest_col_name = col
+                        break
+                        
+                dest_breakdown_dict = {}
+                if dest_col_name:
+                    for truck in LIST_OF_TRUCKS:
+                        truck_trips = df_current_trips_raw[df_current_trips_raw["Identity"] == truck]
+                        if not truck_trips.empty:
+                            # Count occurrences of each destination
+                            dest_counts = truck_trips[dest_col_name].value_counts()
+                            # Format as: "Ndola: 4 | Lusaka: 2"
+                            dest_str = " | ".join([f"{str(k).title()}: {v}" for k, v in dest_counts.items()])
+                            dest_breakdown_dict[truck] = dest_str
+                        else:
+                            dest_breakdown_dict[truck] = "No Trips"
+                else:
+                    for truck in LIST_OF_TRUCKS:
+                        dest_breakdown_dict[truck] = "Destination column missing in Excel"
                 
                 df_ws_raw = get_raw_workshop_logs()
                 df_ws_current = df_ws_raw[df_ws_raw['Date'].str.startswith(current_month_str)] if not df_ws_raw.empty else pd.DataFrame()
@@ -368,6 +430,15 @@ if file_trips is not None:
                 current_fleet_avg = round(current_net_days / current_total_trips, 2) if current_total_trips > 0 else 0.0
                 current_total_kms = df_tab1["Current Month KM"].sum()
 
+                # --- PREPARE DATA FOR TAB 4 ---
+                df_tab4 = pd.DataFrame({
+                    "Truck": LIST_OF_TRUCKS,
+                    "Current Month KM": df_tab1["Current Month KM"],
+                    "Total Trips": df_tab1["Total Trips"],
+                    "Workshop Days": df_tab1["Workshop Days"],
+                    "Destination Breakdown": [dest_breakdown_dict.get(t, "") for t in LIST_OF_TRUCKS]
+                })
+
                 all_months = sorted(list(set(list(monthly_totals.keys()) + list(ws_monthly_totals.keys()) + list(monthly_trip_counts['Month_Str'].unique()) + [current_month_str])))
                 
                 yearly_data = []
@@ -404,18 +475,18 @@ if file_trips is not None:
                 curr_yr = int(current_month_str[:4])
                 curr_mo = int(current_month_str[5:7])
 
-                # --- THE FUTURE-PROOF TRI-DIVISOR LOGIC ---
+                # --- FUTURE-PROOF TRI-DIVISOR LOGIC ---
                 km_divisor = curr_mo if curr_yr == 2026 else (curr_mo if curr_yr > 2026 else 12)
                 
                 if curr_yr == 2026:
-                    trips_divisor = max(1, curr_mo - 3) # Starts counting from April (Month 4)
-                    ws_divisor = max(1, curr_mo - 4)    # Starts counting from May (Month 5)
+                    trips_divisor = max(1, curr_mo - 3)
+                    ws_divisor = max(1, curr_mo - 4)
                 elif curr_yr > 2026:
                     trips_divisor = curr_mo
                     ws_divisor = curr_mo
                 else:
                     trips_divisor = 12
-                    ws_divisor = 12
+                    ws_divisor = 12 
 
                 df_history_year = df_history[df_history["Month"].str.startswith(str(curr_yr))].copy()
                 months_strs = [f"{curr_yr}-{str(i).zfill(2)}" for i in range(1, 13)]
@@ -438,7 +509,7 @@ if file_trips is not None:
                     df_multi.at[i, ("Truck Details", "Truck ID")] = truck
                     
                     ytd_km, ytd_trips_for_avg, ytd_ws, ytd_net = 0, 0, 0, 0
-                    ytd_trips_for_true_net = 0 # Specifically segregated for the final division
+                    ytd_trips_for_true_net = 0 
                     
                     for j, m_str in enumerate(months_strs):
                         m_name = month_names[j]
@@ -462,11 +533,9 @@ if file_trips is not None:
                                 
                                 ytd_km += int(r["Mileage"])
                                 
-                                # ACCUMULATE TRIPS FROM APRIL 2026 ONWARD
                                 if m_yr > 2026 or (m_yr == 2026 and m_mo >= 4):
                                     ytd_trips_for_avg += int(r["Total Trips"])
                                     
-                                # ACCUMULATE WS AND NET DAYS (AND MATCHING TRIPS) FROM MAY 2026 ONWARD
                                 if m_yr > 2026 or (m_yr == 2026 and m_mo >= 5):
                                     ytd_ws += int(r["Workshop Days"])
                                     ytd_net += int(r["Net Available Days"])
@@ -485,7 +554,9 @@ if file_trips is not None:
                     df_multi.at[i, ("YTD Averages", "TRUE Avg Days/Trip")] = f"{true_avg_days_trip:.2f}"
 
                 st.success("✅ Analytics Engine Complete!")
-                tab1, tab2, tab3 = st.tabs(["📅 Current Month", "📈 Fleet Yearly Trends", "🗓️ YTD Tracker"])
+                
+                # --- NEW TAB LAYOUT ---
+                tab1, tab2, tab3, tab4 = st.tabs(["📅 Current Month", "📈 Yearly Trends", "🗓️ YTD Tracker", "📍 Destination Analytics"])
                 
                 # --- TAB 1 ---
                 with tab1:
@@ -497,7 +568,6 @@ if file_trips is not None:
                     m5.metric("Total Fleet KM", f"{int(current_total_kms):,}")
                     
                     st.write("---")
-                    st.markdown("**🎛️ Sort Data Before Generating PDF:**")
                     sc1, sc2 = st.columns([2, 1])
                     with sc1: sort_col_tab1 = st.selectbox("Sort Table By:", df_tab1.columns.tolist(), index=df_tab1.columns.tolist().index("Avg Days per Trip"))
                     with sc2: sort_asc_tab1 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort1") == "Ascending"
@@ -555,13 +625,9 @@ if file_trips is not None:
                 # --- TAB 3 ---
                 with tab3:
                     st.subheader(f"{curr_yr} Year-to-Date Performance Matrix")
-                    st.caption("Scroll horizontally to view all months and YTD Averages.")
-                    
                     st.write("---")
-                    st.markdown("**🎛️ Sort Matrix Before Generating PDF:**")
                     sc3, sc4 = st.columns([2, 1])
                     
-                    # Refined sorting: ONLY the YTD Averages
                     ytd_sort_tuples = [
                         ("YTD Averages", "Avg KM/mo"),
                         ("YTD Averages", "Avg Trips/mo"),
@@ -573,7 +639,6 @@ if file_trips is not None:
                     
                     with sc3: 
                         selected_readable_col = st.selectbox("Sort Matrix By:", readable_cols, index=3)
-                        
                     with sc4: 
                         sort_asc_tab3 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort3") == "Ascending"
                     
@@ -592,20 +657,10 @@ if file_trips is not None:
                     
                     avg_cols = [(m, "Avg Days/Trip") for m in month_names] + [("YTD Averages", "TRUE Avg Days/Trip")]
                     
-                    def style_matrix(val):
-                        if val == "": return ""
-                        try:
-                            v = float(val)
-                            if v == 0.0: return 'background-color: #f8d7da; color: #721c24;'
-                            elif v < 1.7: return 'background-color: #d4edda; color: #155724;'
-                            elif 1.7 <= v < 1.9: return 'background-color: #fff3cd; color: #856404;'
-                            else: return 'background-color: #f8d7da; color: #721c24;'
-                        except: return ''
-
                     try:
-                        styled_matrix = df_multi.style.map(style_matrix, subset=avg_cols)
+                        styled_matrix = df_multi.style.map(color_traffic_light, subset=avg_cols)
                     except AttributeError:
-                        styled_matrix = df_multi.style.applymap(style_matrix, subset=avg_cols)
+                        styled_matrix = df_multi.style.applymap(color_traffic_light, subset=avg_cols)
                         
                     st.dataframe(styled_matrix, use_container_width=True, hide_index=True)
                     
@@ -616,6 +671,25 @@ if file_trips is not None:
                     
                     with c_btn5: st.download_button(label="⬇️ Download YTD Matrix CSV", data=df_csv_export.to_csv(index=False).encode('utf-8'), file_name=f"{curr_yr}_YTD_Tracker.csv", mime="text/csv", use_container_width=True)
                     with c_btn6: st.download_button(label="📄 Generate A2 Landscape PDF", data=bytes(generate_ytd_tracker_pdf(df_multi, current_month_str)), file_name="ZPC_YTD_Matrix.pdf", mime="application/pdf", use_container_width=True, type="primary")
+
+                # --- TAB 4: DESTINATIONS ---
+                with tab4:
+                    st.subheader(f"📍 Route Frequency Breakdown ({current_month_str})")
+                    if not dest_col_name:
+                        st.warning("⚠️ Could not find a destination column in the uploaded Trips file. Please ensure it has a column named 'Destination', 'Location', 'Site', or 'Route'.")
+                    
+                    st.write("---")
+                    sc5, sc6 = st.columns([2, 1])
+                    with sc5: sort_col_tab4 = st.selectbox("Sort Table By:", ["Total Trips", "Current Month KM", "Truck"], index=0, key="sort4_col")
+                    with sc6: sort_asc_tab4 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort4_order") == "Ascending"
+                    
+                    df_tab4 = df_tab4.sort_values(by=sort_col_tab4, ascending=sort_asc_tab4)
+                    
+                    st.dataframe(df_tab4, use_container_width=True, hide_index=True)
+                    
+                    c_btn7, c_btn8 = st.columns(2)
+                    with c_btn7: st.download_button("⬇️ Download Destination CSV", data=df_tab4.to_csv(index=False).encode('utf-8'), file_name=f"destinations_{current_month_str}.csv", mime="text/csv", use_container_width=True)
+                    with c_btn8: st.download_button("📄 Generate Destination PDF Report", data=bytes(generate_destinations_pdf(df_tab4, current_month_str)), file_name=f"ZPC_Destinations_{current_month_str}.pdf", mime="application/pdf", use_container_width=True, type="primary")
 
     except Exception as e:
         st.error(f"❌ Error: {e}")
