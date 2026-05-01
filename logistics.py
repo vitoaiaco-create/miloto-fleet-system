@@ -53,7 +53,10 @@ col1, col2 = st.columns(2)
 with col1:
     uploaded_file = st.file_uploader("Upload Miloto Trips File (.xlsx or .csv)", type=["xlsx", "xls", "csv"])
 with col2:
-    total_days_in_month = st.number_input("Total Days Available in Month", min_value=1, max_value=31, value=30)
+    # Adding a clean UI placeholder to let the user know automation is active
+    st.write("") 
+    st.write("") 
+    st.info("📅 Available days are calculated automatically based on the latest trip date in your uploaded file.")
 
 # --- 4. ANALYTICS LOGIC ---
 if uploaded_file is not None:
@@ -69,6 +72,23 @@ if uploaded_file is not None:
             st.error("❌ The uploaded file must contain an 'Identity' column to count the trucks.")
         else:
             with st.spinner("Crunching data and syncing with Airtable Workshop Logs..."):
+                
+                # --- NEW: AUTOMATICALLY CALCULATE AVAILABLE DAYS ---
+                if "DOT" in df_raw.columns:
+                    # Convert the DOT column to actual datetime objects
+                    df_raw["DOT"] = pd.to_datetime(df_raw["DOT"], format="%d-%m-%Y", errors="coerce")
+                    # Find the maximum valid date in the entire file
+                    max_date = df_raw["DOT"].max()
+                    
+                    if pd.notna(max_date):
+                        total_days_in_month = max_date.day
+                    else:
+                        st.warning("⚠️ Could not read dates in 'DOT' column. Defaulting to 30 days.")
+                        total_days_in_month = 30
+                else:
+                    st.warning("⚠️ 'DOT' column not found in the uploaded file. Defaulting to 30 days.")
+                    total_days_in_month = 30
+                # ---------------------------------------------------
                 
                 # 1. Filter out externals, 30, 48, and 107
                 df_miloto = df_raw[df_raw["Identity"].isin(LIST_OF_TRUCKS)]
