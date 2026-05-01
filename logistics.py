@@ -299,22 +299,40 @@ def generate_destinations_pdf(df_dest, current_month_str):
 
     pdf.set_font("Helvetica", "", 8)
     for idx, row in df_dest.iterrows():
+        text = str(row["Destination Breakdown"])
+        
+        # PRE-CALCULATE HEIGHT to stop the infinite page-break loop
+        text_width = pdf.get_string_width(text)
+        lines = int(text_width / 150) + 1  # 150mm is the safe width inside the 155mm cell
+        line_height = 6
+        row_height = lines * line_height
+        
+        # Manually trigger a clean page break if we are near the bottom of the A4 page
+        if pdf.get_y() + row_height > 185:
+            pdf.add_page()
+            
         x_start = pdf.get_x()
         y_start = pdf.get_y()
         
-        pdf.cell(col_widths[0], 8, str(row["Truck"]), border=1, align="C")
-        pdf.cell(col_widths[1], 8, str(row["Current Month KM"]), border=1, align="C")
-        pdf.cell(col_widths[2], 8, str(row["Total Trips"]), border=1, align="C")
-        pdf.cell(col_widths[3], 8, str(row["Workshop Days"]), border=1, align="C")
+        # Print left-hand columns using dynamic row_height so borders perfectly match the text height
+        pdf.cell(col_widths[0], row_height, str(row["Truck"]), border=1, align="C")
+        pdf.cell(col_widths[1], row_height, str(row["Current Month KM"]), border=1, align="C")
+        pdf.cell(col_widths[2], row_height, str(row["Total Trips"]), border=1, align="C")
+        pdf.cell(col_widths[3], row_height, str(row["Workshop Days"]), border=1, align="C")
         
+        # Print MultiCell text 
         pdf.set_xy(x_start + sum(col_widths[:4]), y_start)
-        pdf.multi_cell(col_widths[4], 8, str(row["Destination Breakdown"]), border=1, align="L")
+        pdf.multi_cell(col_widths[4], line_height, text, border=1, align="L")
+        
+        # Reset the Y coordinate to the absolute bottom of this newly rendered row to prep for the next row
+        actual_bottom = max(pdf.get_y(), y_start + row_height)
+        pdf.set_xy(pdf.l_margin, actual_bottom)
         
     return pdf.output()
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v8.1 (Destination Numeric Sorting Fix)")
+st.caption("🟢 App Update: v8.2 (PDF MultiCell Page Break Loop Fixed)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -675,15 +693,12 @@ if file_trips is not None:
                     with sc5: sort_col_tab4 = st.selectbox("Sort Table By:", ["Total Trips", "Current Month KM", "Workshop Days", "Truck"], index=0, key="sort4_col")
                     with sc6: sort_asc_tab4 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort4_order") == "Ascending"
                     
-                    # STRICT NUMERIC ENFORCEMENT BEFORE SORTING
                     df_tab4["Total Trips"] = pd.to_numeric(df_tab4["Total Trips"], errors='coerce').fillna(0)
                     df_tab4["Current Month KM"] = pd.to_numeric(df_tab4["Current Month KM"], errors='coerce').fillna(0)
                     df_tab4["Workshop Days"] = pd.to_numeric(df_tab4["Workshop Days"], errors='coerce').fillna(0)
 
-                    # Sort and physically lock the index order for the PDF
                     df_tab4 = df_tab4.sort_values(by=sort_col_tab4, ascending=sort_asc_tab4).reset_index(drop=True)
                     
-                    # Clean floats back to ints for display
                     df_tab4["Total Trips"] = df_tab4["Total Trips"].astype(int)
                     df_tab4["Current Month KM"] = df_tab4["Current Month KM"].astype(int)
                     df_tab4["Workshop Days"] = df_tab4["Workshop Days"].astype(int)
