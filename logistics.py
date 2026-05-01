@@ -46,9 +46,9 @@ def get_workshop_downtime():
         st.error(f"⚠️ Could not fetch Workshop Logs: {e}")
         return pd.DataFrame(columns=["Truck", "Workshop Days"])
 
-# --- 3. MILEAGE PROCESSING ENGINE ---
+# --- 3. MILEAGE PROCESSING ENGINE (UPGRADED ALGORITHM) ---
 def process_mileage_data(df_mileage):
-    """Parses the 400+ columns of daily odometer readings to calculate monthly km diffs."""
+    """Calculates daily diffs to filter out typos (like 8,000,000 km jumps)."""
     dates_row = df_mileage.iloc[0].values
     col_to_date = {}
     
@@ -60,55 +60,56 @@ def process_mileage_data(df_mileage):
             try: col_to_date[i] = pd.to_datetime(val)
             except: pass
 
-    # Group columns by Year-Month (e.g., '2025-01', '2026-03')
-    month_to_cols = {}
-    for col_idx, dt in col_to_date.items():
-        m_key = dt.strftime("%Y-%m")
-        if m_key not in month_to_cols: month_to_cols[m_key] = []
-        month_to_cols[m_key].append(col_idx)
-
-    sorted_months = sorted(month_to_cols.keys())
+    monthly_totals = {}
     truck_mileage = []
-    monthly_totals = {m: 0 for m in sorted_months[1:]} 
 
-    # Process each truck's daily readings
     for idx, row in df_mileage.iterrows():
         truck_id_raw = str(row.iloc[0]).strip()
         if truck_id_raw.startswith("MTL"):
             num = truck_id_raw.replace("MTL", "")
             std_truck = f"MILOTO-{num}(MTL{num})"
-
-            # Find the max odometer reading for each month
-            m_maxes = {}
-            for m_key in sorted_months:
-                cols = month_to_cols[m_key]
-                vals = []
-                for c in cols:
-                    try:
-                        v = float(row.iloc[c])
-                        if pd.notna(v): vals.append(v)
-                    except: pass
-                m_maxes[m_key] = max(vals) if vals else None
-
-            # Calculate km driven (Current Month Max - Previous Month Max)
-            m_diffs = {}
-            for i in range(1, len(sorted_months)):
-                prev_m = sorted_months[i-1]
-                curr_m = sorted_months[i]
-                if m_maxes[prev_m] is not None and m_maxes[curr_m] is not None:
-                    diff = max(0, m_maxes[curr_m] - m_maxes[prev_m]) # Prevent negatives
-                    m_diffs[curr_m] = diff
-                    monthly_totals[curr_m] += diff
-
+            
+            # Extract all daily readings
+            readings = []
+            for c, dt in col_to_date.items():
+                try:
+                    v = float(row.iloc[c])
+                    if pd.notna(v) and v > 0:
+                        readings.append((dt, v))
+                except: pass
+            
+            # Sort chronologically to track day-to-day
+            readings.sort(key=lambda x: x[0])
+            
+            truck_m_totals = {}
+            # Calculate daily differences
+            for i in range(1, len(readings)):
+                prev_dt, prev_v = readings[i-1]
+                curr_dt, curr_v = readings[i]
+                
+                diff = curr_v - prev_v
+                
+                # Automatically discard data-entry typos (e.g. diffs over 1,500km in a single day)
+                if 0 <= diff <= 1500:
+                    m_key = curr_dt.strftime("%Y-%m")
+                    
+                    if m_key not in monthly_totals:
+                        monthly_totals[m_key] = 0
+                    monthly_totals[m_key] += diff
+                    
+                    if m_key not in truck_m_totals:
+                        truck_m_totals[m_key] = 0
+                    truck_m_totals[m_key] += diff
+                    
             truck_data = {"Truck": std_truck}
-            truck_data.update(m_diffs)
+            truck_data.update(truck_m_totals)
             truck_mileage.append(truck_data)
 
     return pd.DataFrame(truck_mileage), monthly_totals
 
 # --- 4. PDF GENERATOR ---
 def generate_pdf_report(df_master, monthly_totals=None):
-    """Generates the ZPC KILOMETRE & UTILIZATION REPORT using fpdf2 and matplotlib."""
+    """Generates the ZPC KILOMETRE & UTILIZATION REPORT."""
     pdf = FPDF(orientation="L", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -120,7 +121,7 @@ def generate_pdf_report(df_master, monthly_totals=None):
     pdf.cell(0, 8, "FLEET UTILIZATION & KILOMETRE REPORT", ln=True, align="C")
     pdf.ln(5)
 
-    # --- BAR CHART (If mileage data exists) ---
+    # --- BAR CHART ---
     if monthly_totals:
         months_labels = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
         y_2025 = [monthly_totals.get(f"2025-{m}", 0) for m in months_labels]
@@ -136,6 +137,10 @@ def generate_pdf_report(df_master, monthly_totals=None):
         ax.set_title('2026 vs 2025 Total kms')
         ax.set_xticks(x)
         ax.set_xticklabels(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'])
+        
+        # Stop scientific notation on Y-axis (1e6) so it prints normal numbers
+        ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda val, loc: f"{int(val):,}"))
+        
         ax.legend()
         plt.tight_layout()
 
@@ -149,11 +154,9 @@ def generate_pdf_report(df_master, monthly_totals=None):
     # --- MASTER DATA TABLE ---
     pdf.set_font("Helvetica", "B", 9)
     
-    # FIX: Separate the display headers from the actual dataframe column names
     data_cols = ["Truck", "Total Trips", "Workshop Days", "Net Available Days", "Avg Days per Trip"]
     display_cols = ["Truck", "Total Trips", "WS Days", "Net Days", "Avg Days/Trip"]
     
-    # Grab the last 3 months of kilometer data if available
     km_cols = [c for c in df_master.columns if "2026-" in c or "2025-" in c][-3:] 
     
     data_cols.extend(km_cols)
@@ -161,17 +164,14 @@ def generate_pdf_report(df_master, monthly_totals=None):
     
     col_widths = [40, 25, 25, 25, 30] + [30] * len(km_cols)
     
-    # Print Table Header (Using shortened display names)
     for i, col_name in enumerate(display_cols):
         pdf.cell(col_widths[i], 8, str(col_name), border=1, align="C")
     pdf.ln()
 
-    # Print Table Rows (Pulling from actual dataframe names)
     pdf.set_font("Helvetica", "", 8)
     for idx, row in df_master.iterrows():
         for i, col_name in enumerate(data_cols):
             val = row[col_name]
-            # Format numbers safely
             if isinstance(val, (int, float)):
                 val = f"{val:.1f}" if "Avg" in col_name else f"{int(val)}"
             pdf.cell(col_widths[i], 6, str(val), border=1, align="C")
@@ -201,7 +201,7 @@ if file_trips is not None:
         else:
             with st.spinner("Crunching data and syncing with Airtable..."):
                 
-                # --- NORMALIZE IDENTITY COLUMN (Fixes inverted formats) ---
+                # --- NORMALIZE IDENTITY COLUMN ---
                 def clean_identity(val):
                     val = str(val).strip()
                     if val.startswith("MTL") and "(MILOTO-" in val:
