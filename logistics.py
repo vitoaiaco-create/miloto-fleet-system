@@ -149,22 +149,27 @@ def generate_pdf_report(df_master, monthly_totals=None):
     # --- MASTER DATA TABLE ---
     pdf.set_font("Helvetica", "B", 9)
     
-    # Define columns based on whether mileage data was merged
-    cols = ["Truck", "Total Trips", "WS Days", "Net Days", "Avg Days/Trip"]
-    km_cols = [c for c in df_master.columns if "2026-" in c or "2025-" in c][-3:] # Show last 3 months of km if available
-    cols.extend(km_cols)
+    # FIX: Separate the display headers from the actual dataframe column names
+    data_cols = ["Truck", "Total Trips", "Workshop Days", "Net Available Days", "Avg Days per Trip"]
+    display_cols = ["Truck", "Total Trips", "WS Days", "Net Days", "Avg Days/Trip"]
+    
+    # Grab the last 3 months of kilometer data if available
+    km_cols = [c for c in df_master.columns if "2026-" in c or "2025-" in c][-3:] 
+    
+    data_cols.extend(km_cols)
+    display_cols.extend(km_cols)
     
     col_widths = [40, 25, 25, 25, 30] + [30] * len(km_cols)
     
-    # Print Table Header
-    for i, col_name in enumerate(cols):
-        pdf.cell(col_widths[i], 8, col_name, border=1, align="C")
+    # Print Table Header (Using shortened display names)
+    for i, col_name in enumerate(display_cols):
+        pdf.cell(col_widths[i], 8, str(col_name), border=1, align="C")
     pdf.ln()
 
-    # Print Table Rows
+    # Print Table Rows (Pulling from actual dataframe names)
     pdf.set_font("Helvetica", "", 8)
     for idx, row in df_master.iterrows():
-        for i, col_name in enumerate(cols):
+        for i, col_name in enumerate(data_cols):
             val = row[col_name]
             # Format numbers safely
             if isinstance(val, (int, float)):
