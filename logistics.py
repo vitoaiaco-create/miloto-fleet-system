@@ -154,7 +154,8 @@ def generate_monthly_pdf(df_master, current_month_str):
                 except: pass
 
             if isinstance(val, (int, float)):
-                val = f"{val:.1f}" if "Avg" in col_name else f"{int(val)}"
+                # Enforce exactly 2 decimal places for the Avg column in the PDF
+                val = f"{val:.2f}" if "Avg" in col_name else f"{int(val)}"
                 
             pdf.cell(col_widths[i], 6, str(val), border=1, align="C", fill=fill)
         pdf.ln()
@@ -253,7 +254,7 @@ def generate_history_pdf(df_pivot, metric_choice):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v4.1 (Traffic Light System Enabled)")
+st.caption("🟢 App Update: v4.2 (Precision Formatting & UI Alignment)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -377,6 +378,7 @@ if file_trips is not None:
                 st.success("✅ Analytics Engine Complete!")
                 tab1, tab2, tab3 = st.tabs(["📅 Current Month", "📈 Fleet Yearly Trends", "🚚 Detailed Truck History"])
                 
+                # --- TAB 1 ---
                 with tab1:
                     m1, m2, m3, m4, m5 = st.columns(5)
                     m1.metric("Total Trips", int(current_total_trips))
@@ -403,12 +405,11 @@ if file_trips is not None:
                             else: return 'background-color: #f8d7da; color: #721c24;'
                         except: return ''
 
-                    # Apply styling to dataframe
+                    # Enforce strictly 2 decimals on the web dataframe without altering the raw data
                     try:
-                        styled_df = df_tab1.style.map(color_traffic_light, subset=["Avg Days per Trip"])
+                        styled_df = df_tab1.style.map(color_traffic_light, subset=["Avg Days per Trip"]).format({"Avg Days per Trip": "{:.2f}"})
                     except AttributeError:
-                        # Fallback for older Streamlit/Pandas versions
-                        styled_df = df_tab1.style.applymap(color_traffic_light, subset=["Avg Days per Trip"])
+                        styled_df = df_tab1.style.applymap(color_traffic_light, subset=["Avg Days per Trip"]).format({"Avg Days per Trip": "{:.2f}"})
                         
                     st.dataframe(styled_df, use_container_width=True, hide_index=True)
                     
@@ -416,6 +417,7 @@ if file_trips is not None:
                     with c_btn1: st.download_button("⬇️ Download Monthly CSV", data=df_tab1.to_csv(index=False).encode('utf-8'), file_name=f"logistics_{current_month_str}.csv", mime="text/csv", use_container_width=True)
                     with c_btn2: st.download_button("📄 Generate Monthly PDF Report", data=bytes(generate_monthly_pdf(df_tab1, current_month_str)), file_name=f"ZPC_Report_{current_month_str}.pdf", mime="application/pdf", use_container_width=True, type="primary")
 
+                # --- TAB 2 ---
                 with tab2:
                     if monthly_totals:
                         months_labels = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12']
@@ -437,12 +439,14 @@ if file_trips is not None:
                         ax.legend()
                         st.pyplot(fig)
                     
-                    st.dataframe(df_yearly, use_container_width=True, hide_index=True)
+                    # Ensure strictly 2 decimals on the yearly table
+                    st.dataframe(df_yearly.style.format({"Avg Days/Trip": "{:.2f}"}), use_container_width=True, hide_index=True)
                     
                     c_btn3, c_btn4 = st.columns(2)
                     with c_btn3: st.download_button("⬇️ Download Yearly CSV", data=df_yearly.to_csv(index=False).encode('utf-8'), file_name="yearly_fleet.csv", mime="text/csv", use_container_width=True)
                     with c_btn4: st.download_button("📄 Generate Yearly PDF Report", data=bytes(generate_yearly_pdf(df_yearly, monthly_totals)), file_name="ZPC_Yearly_Report.pdf", mime="application/pdf", use_container_width=True, type="primary")
                 
+                # --- TAB 3 ---
                 with tab3:
                     metric_choice = st.selectbox("📊 Select Metric to View:", ["Mileage", "Workshop Days", "Total Trips", "Net Available Days", "Avg Days/Trip"])
                     df_pivot = df_history.pivot(index="Truck", columns="Month", values=metric_choice).reset_index().fillna(0)
