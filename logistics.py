@@ -280,7 +280,7 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v5.3 (Future-Proof 2027 Logic Implemented)")
+st.caption("🟢 App Update: v5.4 (YTD Averages Anchored to May 2026)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -404,7 +404,7 @@ if file_trips is not None:
                 curr_yr = int(current_month_str[:4])
                 curr_mo = int(current_month_str[5:7])
 
-                # --- FUTURE-PROOF DUAL-DIVISOR LOGIC ---
+                # --- THE FUTURE-PROOF 2026 ANOMALY FIX ---
                 km_divisor = curr_mo if curr_yr == 2026 else (curr_mo if curr_yr > 2026 else 12)
                 
                 if curr_yr == 2026:
@@ -457,9 +457,12 @@ if file_trips is not None:
                                 df_multi.at[i, (m_name, "Avg Days/Trip")] = f"{r['Avg Days/Trip']:.2f}"
                                 
                                 ytd_km += int(r["Mileage"])
-                                ytd_trips += int(r["Total Trips"])
-                                ytd_ws += int(r["Workshop Days"])
-                                ytd_net += int(r["Net Available Days"])
+                                
+                                # ONLY ACCUMULATE OPS DATA IF MONTH >= MAY 2026
+                                if m_yr > 2026 or (m_yr == 2026 and m_mo >= 5):
+                                    ytd_trips += int(r["Total Trips"])
+                                    ytd_ws += int(r["Workshop Days"])
+                                    ytd_net += int(r["Net Available Days"])
                             else:
                                 df_multi.at[i, (m_name, "Total KM")] = 0
                                 df_multi.at[i, (m_name, "Total Trips")] = 0
