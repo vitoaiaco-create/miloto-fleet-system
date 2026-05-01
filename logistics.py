@@ -280,7 +280,7 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v6.1 (Clean YTD Average Sorting Enabled)")
+st.caption("🟢 App Update: v7.0 (Tri-Divisor Logic & Mathematical Segregation)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -404,15 +404,18 @@ if file_trips is not None:
                 curr_yr = int(current_month_str[:4])
                 curr_mo = int(current_month_str[5:7])
 
-                # --- FUTURE-PROOF DUAL-DIVISOR LOGIC ---
+                # --- THE FUTURE-PROOF TRI-DIVISOR LOGIC ---
                 km_divisor = curr_mo if curr_yr == 2026 else (curr_mo if curr_yr > 2026 else 12)
                 
                 if curr_yr == 2026:
-                    ops_divisor = max(1, curr_mo - 4)
+                    trips_divisor = max(1, curr_mo - 3) # Starts counting from April (Month 4)
+                    ws_divisor = max(1, curr_mo - 4)    # Starts counting from May (Month 5)
                 elif curr_yr > 2026:
-                    ops_divisor = curr_mo
+                    trips_divisor = curr_mo
+                    ws_divisor = curr_mo
                 else:
-                    ops_divisor = 12 
+                    trips_divisor = 12
+                    ws_divisor = 12
 
                 df_history_year = df_history[df_history["Month"].str.startswith(str(curr_yr))].copy()
                 months_strs = [f"{curr_yr}-{str(i).zfill(2)}" for i in range(1, 13)]
@@ -434,7 +437,8 @@ if file_trips is not None:
                     truck_data = df_history_year[df_history_year["Truck"] == truck]
                     df_multi.at[i, ("Truck Details", "Truck ID")] = truck
                     
-                    ytd_km, ytd_trips, ytd_ws, ytd_net = 0, 0, 0, 0
+                    ytd_km, ytd_trips_for_avg, ytd_ws, ytd_net = 0, 0, 0, 0
+                    ytd_trips_for_true_net = 0 # Specifically segregated for the final division
                     
                     for j, m_str in enumerate(months_strs):
                         m_name = month_names[j]
@@ -458,21 +462,26 @@ if file_trips is not None:
                                 
                                 ytd_km += int(r["Mileage"])
                                 
+                                # ACCUMULATE TRIPS FROM APRIL 2026 ONWARD
+                                if m_yr > 2026 or (m_yr == 2026 and m_mo >= 4):
+                                    ytd_trips_for_avg += int(r["Total Trips"])
+                                    
+                                # ACCUMULATE WS AND NET DAYS (AND MATCHING TRIPS) FROM MAY 2026 ONWARD
                                 if m_yr > 2026 or (m_yr == 2026 and m_mo >= 5):
-                                    ytd_trips += int(r["Total Trips"])
                                     ytd_ws += int(r["Workshop Days"])
                                     ytd_net += int(r["Net Available Days"])
+                                    ytd_trips_for_true_net += int(r["Total Trips"])
                             else:
                                 df_multi.at[i, (m_name, "Total KM")] = 0
                                 df_multi.at[i, (m_name, "Total Trips")] = 0
                                 df_multi.at[i, (m_name, "WS Days")] = 0
                                 df_multi.at[i, (m_name, "Avg Days/Trip")] = "0.00"
 
-                    true_avg_days_trip = ytd_net / ytd_trips if ytd_trips > 0 else 0.0
+                    true_avg_days_trip = ytd_net / ytd_trips_for_true_net if ytd_trips_for_true_net > 0 else 0.0
                     
                     df_multi.at[i, ("YTD Averages", "Avg KM/mo")] = f"{ytd_km/km_divisor:,.0f}" if km_divisor > 0 else "0"
-                    df_multi.at[i, ("YTD Averages", "Avg Trips/mo")] = f"{ytd_trips/ops_divisor:.1f}" if ops_divisor > 0 else "0.0"
-                    df_multi.at[i, ("YTD Averages", "Avg WS/mo")] = f"{ytd_ws/ops_divisor:.1f}" if ops_divisor > 0 else "0.0"
+                    df_multi.at[i, ("YTD Averages", "Avg Trips/mo")] = f"{ytd_trips_for_avg/trips_divisor:.1f}" if trips_divisor > 0 else "0.0"
+                    df_multi.at[i, ("YTD Averages", "Avg WS/mo")] = f"{ytd_ws/ws_divisor:.1f}" if ws_divisor > 0 else "0.0"
                     df_multi.at[i, ("YTD Averages", "TRUE Avg Days/Trip")] = f"{true_avg_days_trip:.2f}"
 
                 st.success("✅ Analytics Engine Complete!")
@@ -548,12 +557,11 @@ if file_trips is not None:
                     st.subheader(f"{curr_yr} Year-to-Date Performance Matrix")
                     st.caption("Scroll horizontally to view all months and YTD Averages.")
                     
-                    # --- RESTRICTED YTD MATRIX SORTING ENGINE ---
                     st.write("---")
                     st.markdown("**🎛️ Sort Matrix Before Generating PDF:**")
                     sc3, sc4 = st.columns([2, 1])
                     
-                    # We ONLY want to sort by the 4 YTD Average columns
+                    # Refined sorting: ONLY the YTD Averages
                     ytd_sort_tuples = [
                         ("YTD Averages", "Avg KM/mo"),
                         ("YTD Averages", "Avg Trips/mo"),
@@ -564,7 +572,6 @@ if file_trips is not None:
                     readable_cols = [f"YTD {c[1]}" for c in ytd_sort_tuples]
                     
                     with sc3: 
-                        # Set default to TRUE Avg Days/Trip (Index 3)
                         selected_readable_col = st.selectbox("Sort Matrix By:", readable_cols, index=3)
                         
                     with sc4: 
