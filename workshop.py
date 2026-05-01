@@ -65,7 +65,7 @@ def delete_last_row():
         st.error(f"❌ Airtable Error: {e}")
 
 # --- 4. UI LAYOUT ---
-st.title("🛠️ Workshop & Downtime Log")
+st.title(":material/precision_manufacturing: Workshop & Downtime Log")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -77,7 +77,7 @@ with col2:
 st.multiselect("Select Trucks", LIST_OF_TRUCKS, key="truck_selector")
 st.button("💾 Submit Logs", use_container_width=True, on_click=save_entry, type="primary")
 
-# --- 5. SUBMITTED LOGS (UPGRADED UI) ---
+# --- 5. SUBMITTED LOGS ---
 st.divider()
 st.subheader("📋 Submitted Logs")
 st.caption("Check the box next to any log to select it for deletion.")
@@ -94,29 +94,24 @@ try:
             flat_data.append(row)
             
         df_history = pd.DataFrame(flat_data)
-        
-        # Insert the Checkbox column at the very front
         df_history.insert(0, "Select", False)
         
         cols_to_show = ["Select", "Date", "Trucks", "Status", "Logged By", "id"]
         existing_cols = [c for c in cols_to_show if c in df_history.columns]
         
-        # Display the table with only the Select column being editable
         edited_df = st.data_editor(
             df_history[existing_cols], 
             use_container_width=True, 
             hide_index=True,
             column_config={
-                "id": None, # Hide the Airtable ID
+                "id": None, 
                 "Select": st.column_config.CheckboxColumn("Select", default=False)
             },
-            disabled=["Date", "Trucks", "Status", "Logged By"] # Lock the text so it can't be messed up
+            disabled=["Date", "Trucks", "Status", "Logged By"]
         )
         
-        # Check if any boxes were ticked
         selected_ids = edited_df[edited_df["Select"] == True]["id"].tolist()
         
-        # If a box is checked, reveal the Delete Button!
         if len(selected_ids) > 0:
             if st.button(f"🗑️ Delete {len(selected_ids)} Selected Log(s)", type="primary", use_container_width=True):
                 for del_id in selected_ids:
@@ -124,7 +119,7 @@ try:
                 st.success("✅ Logs permanently deleted!")
                 st.rerun()
 
-    st.write("") # Add a little space
+    st.write("")
     if st.button("⬅️ Undo/Delete Last Entry", use_container_width=True):
         delete_last_row()
         st.rerun()
