@@ -130,7 +130,6 @@ def generate_monthly_pdf(df_master, current_month_str):
         for i, col_name in enumerate(data_cols):
             val = row[col_name]
             
-            # PDF TRAFFIC LIGHT LOGIC
             fill = False
             pdf.set_fill_color(255, 255, 255)
             pdf.set_text_color(0, 0, 0)
@@ -138,23 +137,17 @@ def generate_monthly_pdf(df_master, current_month_str):
             if col_name == "Avg Days per Trip":
                 try:
                     v = float(val)
-                    if v == 0.0:  # Inactive truck
-                        pdf.set_fill_color(248, 215, 218) # Red bg
-                        pdf.set_text_color(114, 28, 36)   # Red text
+                    if v == 0.0:
+                        pdf.set_fill_color(248, 215, 218); pdf.set_text_color(114, 28, 36); fill = True
                     elif v < 1.7:
-                        pdf.set_fill_color(212, 237, 218) # Green bg
-                        pdf.set_text_color(21, 87, 36)    # Green text
+                        pdf.set_fill_color(212, 237, 218); pdf.set_text_color(21, 87, 36); fill = True
                     elif 1.7 <= v < 1.9:
-                        pdf.set_fill_color(255, 243, 205) # Yellow bg
-                        pdf.set_text_color(133, 100, 4)   # Yellow text
+                        pdf.set_fill_color(255, 243, 205); pdf.set_text_color(133, 100, 4); fill = True
                     else:
-                        pdf.set_fill_color(248, 215, 218) # Red bg
-                        pdf.set_text_color(114, 28, 36)   # Red text
-                    fill = True
+                        pdf.set_fill_color(248, 215, 218); pdf.set_text_color(114, 28, 36); fill = True
                 except: pass
 
             if isinstance(val, (int, float)):
-                # Enforce exactly 2 decimal places for the Avg column in the PDF
                 val = f"{val:.2f}" if "Avg" in col_name else f"{int(val)}"
                 
             pdf.cell(col_widths[i], 6, str(val), border=1, align="C", fill=fill)
@@ -222,39 +215,68 @@ def generate_yearly_pdf(df_yearly, monthly_totals):
 
     return pdf.output()
 
-def generate_history_pdf(df_pivot, metric_choice):
-    pdf = FPDF(orientation="L", unit="mm", format="A4")
+def generate_ytd_tracker_pdf(df_multi, current_month_str):
+    """Outputs the massive 53-column matrix onto a giant A2 Landscape PDF."""
+    pdf = FPDF(orientation="L", unit="mm", format="A2")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
+    pdf.set_font("Helvetica", "B", 24)
+    pdf.cell(0, 15, "ZAMBEZI PORTLAND CEMENT", ln=True, align="C")
     pdf.set_font("Helvetica", "B", 18)
-    pdf.cell(0, 10, "ZAMBEZI PORTLAND CEMENT", ln=True, align="C")
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 8, f"DETAILED TRUCK HISTORY - {metric_choice.upper()}", ln=True, align="C")
-    pdf.ln(5)
+    pdf.cell(0, 10, f"2026 YEAR-TO-DATE TRACKER - {current_month_str}", ln=True, align="C")
+    pdf.ln(10)
 
-    pdf.set_font("Helvetica", "B", 8)
-    cols = df_pivot.columns.tolist()
+    # Flatten headers for PDF printing
+    pdf.set_font("Helvetica", "B", 7)
+    headers = []
+    col_widths = []
     
-    truck_col_w = 35
-    month_col_w = (270 - truck_col_w) / max(1, len(cols) - 1)
-    col_widths = [truck_col_w] + [month_col_w] * (len(cols) - 1)
-    
-    for i, col_name in enumerate(cols):
-        pdf.cell(col_widths[i], 8, str(col_name), border=1, align="C")
+    for col in df_multi.columns:
+        if col[0] == "Truck Details":
+            headers.append("Truck ID")
+            col_widths.append(34) # Give truck name more space
+        elif col[0] == "YTD Averages":
+            headers.append(f"YTD {col[1]}")
+            col_widths.append(15) # Averages need a bit more width
+        else:
+            headers.append(f"{col[0]} {col[1]}") # E.g., "Jan Total KM"
+            col_widths.append(9.5) # ~9.5mm per cell for the 48 sub-metrics
+            
+    for i, h in enumerate(headers):
+        pdf.cell(col_widths[i], 8, h, border=1, align="C")
     pdf.ln()
 
     pdf.set_font("Helvetica", "", 7)
-    for idx, row in df_pivot.iterrows():
-        for i, col_name in enumerate(cols):
-            pdf.cell(col_widths[i], 6, str(row[col_name]), border=1, align="C")
+    for idx, row in df_multi.iterrows():
+        for i, col in enumerate(df_multi.columns):
+            val = str(row[col])
+            
+            fill = False
+            pdf.set_fill_color(255, 255, 255)
+            pdf.set_text_color(0, 0, 0)
+            
+            if "Avg Days/Trip" in col[1] and val != "":
+                try:
+                    v = float(val)
+                    if v == 0.0:
+                        pdf.set_fill_color(248, 215, 218); pdf.set_text_color(114, 28, 36); fill = True
+                    elif v < 1.7:
+                        pdf.set_fill_color(212, 237, 218); pdf.set_text_color(21, 87, 36); fill = True
+                    elif 1.7 <= v < 1.9:
+                        pdf.set_fill_color(255, 243, 205); pdf.set_text_color(133, 100, 4); fill = True
+                    else:
+                        pdf.set_fill_color(248, 215, 218); pdf.set_text_color(114, 28, 36); fill = True
+                except: pass
+
+            pdf.cell(col_widths[i], 6, val, border=1, align="C", fill=fill)
         pdf.ln()
 
     return pdf.output()
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v4.2 (Precision Formatting & UI Alignment)")
+st.caption("🟢 App Update: v5.0 (YTD MultiIndex Matrix & A2 PDF Engine)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -267,7 +289,7 @@ if file_trips is not None:
         if "Identity" not in df_raw.columns:
             st.error("❌ The uploaded trips file must contain an 'Identity' column.")
         else:
-            with st.spinner("Crunching historical and current month data..."):
+            with st.spinner("Crunching massive historical data arrays..."):
                 def clean_identity(val):
                     val = str(val).strip()
                     if val.startswith("MTL") and "(MILOTO-" in val:
@@ -357,6 +379,7 @@ if file_trips is not None:
                     })
                 df_yearly = pd.DataFrame(yearly_data)
 
+                # --- BUILD THE MASSIVE YTD TRACKER DATASET ---
                 grid = pd.DataFrame(list(itertools.product(LIST_OF_TRUCKS, all_months)), columns=["Truck", "Month"])
                 df_kms_melt = df_truck_kms.melt(id_vars=["Truck"], var_name="Month", value_name="Mileage") if not df_truck_kms.empty else pd.DataFrame(columns=["Truck", "Month", "Mileage"])
                 df_history = grid.merge(df_kms_melt, on=["Truck", "Month"], how="left").fillna({"Mileage": 0})
@@ -375,8 +398,74 @@ if file_trips is not None:
                 df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r["Total Days"] - r["Workshop Days"]), axis=1)
                 df_history["Avg Days/Trip"] = df_history.apply(lambda r: round(r["Net Available Days"] / r["Total Trips"], 2) if r["Total Trips"] > 0 else 0.0, axis=1)
 
+                # Filter strictly for 2026 data based on prompt requirements
+                df_history_2026 = df_history[df_history["Month"].str.startswith("2026")].copy()
+                months_2026_strs = [f"2026-{str(i).zfill(2)}" for i in range(1, 13)]
+                month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                
+                curr_yr = int(current_month_str[:4])
+                curr_mo = int(current_month_str[5:7])
+                
+                # MultiIndex Column Setup
+                col_tuples = [("Truck Details", "Truck ID")]
+                for m in month_names:
+                    col_tuples.extend([(m, "Total KM"), (m, "Total Trips"), (m, "WS Days"), (m, "Avg Days/Trip")])
+                col_tuples.extend([
+                    ("YTD Averages", "Avg KM/mo"),
+                    ("YTD Averages", "Avg Trips/mo"),
+                    ("YTD Averages", "Avg WS/mo"),
+                    ("YTD Averages", "TRUE Avg Days/Trip")
+                ])
+                mi = pd.MultiIndex.from_tuples(col_tuples)
+                df_multi = pd.DataFrame(columns=mi, index=range(len(LIST_OF_TRUCKS)))
+
+                for i, truck in enumerate(LIST_OF_TRUCKS):
+                    truck_data = df_history_2026[df_history_2026["Truck"] == truck]
+                    df_multi.at[i, ("Truck Details", "Truck ID")] = truck
+                    
+                    ytd_km, ytd_trips, ytd_ws, ytd_net = 0, 0, 0, 0
+                    
+                    for j, m_str in enumerate(months_2026_strs):
+                        m_name = month_names[j]
+                        m_yr = 2026
+                        m_mo = j + 1
+                        
+                        row_data = truck_data[truck_data["Month"] == m_str]
+                        
+                        if m_yr > curr_yr or (m_yr == curr_yr and m_mo > curr_mo):
+                            df_multi.at[i, (m_name, "Total KM")] = ""
+                            df_multi.at[i, (m_name, "Total Trips")] = ""
+                            df_multi.at[i, (m_name, "WS Days")] = ""
+                            df_multi.at[i, (m_name, "Avg Days/Trip")] = ""
+                        else:
+                            if not row_data.empty:
+                                r = row_data.iloc[0]
+                                df_multi.at[i, (m_name, "Total KM")] = int(r["Mileage"])
+                                df_multi.at[i, (m_name, "Total Trips")] = int(r["Total Trips"])
+                                df_multi.at[i, (m_name, "WS Days")] = int(r["Workshop Days"])
+                                df_multi.at[i, (m_name, "Avg Days/Trip")] = f"{r['Avg Days/Trip']:.2f}"
+                                
+                                ytd_km += int(r["Mileage"])
+                                ytd_trips += int(r["Total Trips"])
+                                ytd_ws += int(r["Workshop Days"])
+                                ytd_net += int(r["Net Available Days"])
+                            else:
+                                df_multi.at[i, (m_name, "Total KM")] = 0
+                                df_multi.at[i, (m_name, "Total Trips")] = 0
+                                df_multi.at[i, (m_name, "WS Days")] = 0
+                                df_multi.at[i, (m_name, "Avg Days/Trip")] = "0.00"
+
+                    divisor = curr_mo if curr_yr == 2026 else 12
+                    
+                    true_avg_days_trip = ytd_net / ytd_trips if ytd_trips > 0 else 0.0
+                    
+                    df_multi.at[i, ("YTD Averages", "Avg KM/mo")] = f"{ytd_km/divisor:,.0f}" if divisor > 0 else "0"
+                    df_multi.at[i, ("YTD Averages", "Avg Trips/mo")] = f"{ytd_trips/divisor:.1f}" if divisor > 0 else "0.0"
+                    df_multi.at[i, ("YTD Averages", "Avg WS/mo")] = f"{ytd_ws/divisor:.1f}" if divisor > 0 else "0.0"
+                    df_multi.at[i, ("YTD Averages", "TRUE Avg Days/Trip")] = f"{true_avg_days_trip:.2f}"
+
                 st.success("✅ Analytics Engine Complete!")
-                tab1, tab2, tab3 = st.tabs(["📅 Current Month", "📈 Fleet Yearly Trends", "🚚 Detailed Truck History"])
+                tab1, tab2, tab3 = st.tabs(["📅 Current Month", "📈 Fleet Yearly Trends", "🗓️ 2026 YTD Tracker"])
                 
                 # --- TAB 1 ---
                 with tab1:
@@ -395,7 +484,6 @@ if file_trips is not None:
                     
                     df_tab1 = df_tab1.sort_values(by=sort_col_tab1, ascending=sort_asc_tab1)
                     
-                    # WEB DASHBOARD TRAFFIC LIGHT STYLING
                     def color_traffic_light(val):
                         try:
                             v = float(val)
@@ -405,7 +493,6 @@ if file_trips is not None:
                             else: return 'background-color: #f8d7da; color: #721c24;'
                         except: return ''
 
-                    # Enforce strictly 2 decimals on the web dataframe without altering the raw data
                     try:
                         styled_df = df_tab1.style.map(color_traffic_light, subset=["Avg Days per Trip"]).format({"Avg Days per Trip": "{:.2f}"})
                     except AttributeError:
@@ -439,35 +526,45 @@ if file_trips is not None:
                         ax.legend()
                         st.pyplot(fig)
                     
-                    # Ensure strictly 2 decimals on the yearly table
                     st.dataframe(df_yearly.style.format({"Avg Days/Trip": "{:.2f}"}), use_container_width=True, hide_index=True)
                     
                     c_btn3, c_btn4 = st.columns(2)
                     with c_btn3: st.download_button("⬇️ Download Yearly CSV", data=df_yearly.to_csv(index=False).encode('utf-8'), file_name="yearly_fleet.csv", mime="text/csv", use_container_width=True)
                     with c_btn4: st.download_button("📄 Generate Yearly PDF Report", data=bytes(generate_yearly_pdf(df_yearly, monthly_totals)), file_name="ZPC_Yearly_Report.pdf", mime="application/pdf", use_container_width=True, type="primary")
                 
-                # --- TAB 3 ---
+                # --- TAB 3: YTD TRACKER ---
                 with tab3:
-                    metric_choice = st.selectbox("📊 Select Metric to View:", ["Mileage", "Workshop Days", "Total Trips", "Net Available Days", "Avg Days/Trip"])
-                    df_pivot = df_history.pivot(index="Truck", columns="Month", values=metric_choice).reset_index().fillna(0)
+                    st.subheader("2026 Year-to-Date Performance Matrix")
+                    st.caption("Scroll horizontally to view all months and YTD Averages.")
                     
-                    st.markdown("**🎛️ Sort Data Before Generating PDF:**")
-                    sc3, sc4 = st.columns([2, 1])
-                    with sc3: sort_col_tab3 = st.selectbox("Sort Matrix By:", df_pivot.columns.tolist(), index=0)
-                    with sc4: sort_asc_tab3 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort2") == "Ascending"
+                    # Style the MultiIndex dataframe with traffic lights
+                    avg_cols = [(m, "Avg Days/Trip") for m in month_names] + [("YTD Averages", "TRUE Avg Days/Trip")]
                     
-                    df_pivot = df_pivot.sort_values(by=sort_col_tab3, ascending=sort_asc_tab3)
-                    
-                    df_display = df_pivot.copy()
-                    for c in df_display.columns:
-                        if c != "Truck":
-                            df_display[c] = df_display[c].apply(lambda x: f"{x:.2f}") if metric_choice == "Avg Days/Trip" else df_display[c].astype(int)
-                    
-                    st.dataframe(df_display, use_container_width=True, hide_index=True)
+                    def style_matrix(val):
+                        if val == "": return ""
+                        try:
+                            v = float(val)
+                            if v == 0.0: return 'background-color: #f8d7da; color: #721c24;'
+                            elif v < 1.7: return 'background-color: #d4edda; color: #155724;'
+                            elif 1.7 <= v < 1.9: return 'background-color: #fff3cd; color: #856404;'
+                            else: return 'background-color: #f8d7da; color: #721c24;'
+                        except: return ''
+
+                    try:
+                        styled_matrix = df_multi.style.map(style_matrix, subset=avg_cols)
+                    except AttributeError:
+                        styled_matrix = df_multi.style.applymap(style_matrix, subset=avg_cols)
+                        
+                    st.dataframe(styled_matrix, use_container_width=True, hide_index=True)
                     
                     c_btn5, c_btn6 = st.columns(2)
-                    with c_btn5: st.download_button(label=f"⬇️ Download {metric_choice} Matrix CSV", data=df_display.to_csv(index=False).encode('utf-8'), file_name=f"truck_history.csv", mime="text/csv", use_container_width=True)
-                    with c_btn6: st.download_button(label=f"📄 Generate {metric_choice} PDF", data=bytes(generate_history_pdf(df_display, metric_choice)), file_name=f"ZPC_Matrix_{metric_choice.replace(' ', '')}.pdf", mime="application/pdf", use_container_width=True, type="primary")
+                    
+                    # Flatten headers for CSV export to prevent Excel errors
+                    df_csv_export = df_multi.copy()
+                    df_csv_export.columns = [' '.join(col).strip() for col in df_csv_export.columns.values]
+                    
+                    with c_btn5: st.download_button(label="⬇️ Download YTD Matrix CSV", data=df_csv_export.to_csv(index=False).encode('utf-8'), file_name="2026_YTD_Tracker.csv", mime="text/csv", use_container_width=True)
+                    with c_btn6: st.download_button(label="📄 Generate A2 Landscape PDF", data=bytes(generate_ytd_tracker_pdf(df_multi, current_month_str)), file_name="ZPC_YTD_Matrix.pdf", mime="application/pdf", use_container_width=True, type="primary")
 
     except Exception as e:
         st.error(f"❌ Error: {e}")
