@@ -6,7 +6,7 @@ import io
 import itertools
 from calendar import monthrange
 from datetime import datetime
-import matplotlib.subplots as plt
+import matplotlib.pyplot as plt
 from fpdf import FPDF
 
 # --- 1. FLEET SETUP ---
@@ -171,7 +171,6 @@ def generate_yearly_pdf(df_yearly, monthly_totals):
         y_2025 = [monthly_totals.get(f"2025-{m}", 0) for m in months_labels]
         y_2026 = [monthly_totals.get(f"2026-{m}", 0) for m in months_labels]
 
-        import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(10, 4.5))
         bar_width = 0.35
         x = range(len(months_labels))
@@ -328,7 +327,7 @@ def generate_destinations_pdf(df_dest, report_title):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v10.0 (Prepared By Filter & Dynamic Rendering)")
+st.caption("🟢 App Update: v10.1 (Syntax Fix)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -446,7 +445,10 @@ if file_trips is not None:
                     except: return 30
                         
                 df_history["Total Days"] = df_history["Month"].apply(get_days_in_month)
-                df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r r["Total Days"] - r["Workshop Days"]), axis=1)
+                
+                # --- FIXED SYNTAX ERROR HERE ---
+                df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r["Total Days"] - r["Workshop Days"]), axis=1)
+                
                 df_history["Avg Days/Trip"] = df_history.apply(lambda r: round(r["Net Available Days"] / r["Total Trips"], 2) if r["Total Trips"] > 0 else 0.0, axis=1)
 
                 curr_yr = int(current_month_str[:4])
@@ -577,7 +579,6 @@ if file_trips is not None:
                         y_2025 = [monthly_totals.get(f"2025-{m}", 0) for m in months_labels]
                         y_2026 = [monthly_totals.get(f"2026-{m}", 0) for m in months_labels]
 
-                        import matplotlib.pyplot as plt
                         fig, ax = plt.subplots(figsize=(10, 4))
                         bar_width = 0.35
                         x = range(len(months_labels))
@@ -648,7 +649,6 @@ if file_trips is not None:
                 with tab4:
                     st.subheader(f"📍 Geographic Route Analytics")
                     
-                    # Search for Prepared By and Destination columns
                     prep_col_name = None
                     for col in ["Prepared By", "Prepared by", "prepared by", "User", "Created By"]:
                         if col in df_miloto.columns:
@@ -664,7 +664,6 @@ if file_trips is not None:
                     if not dest_col_name:
                         st.warning("⚠️ Could not find a destination column in the uploaded Trips file.")
                     
-                    # 1. DYNAMIC FILTERS UI
                     time_options = [f"YTD {curr_yr}"] + [m for m in all_months if m.startswith(str(curr_yr))]
                     default_idx = time_options.index(current_month_str) if current_month_str in time_options else 0
                     
@@ -679,7 +678,6 @@ if file_trips is not None:
                     with col_t4_2:
                         selected_preparer = st.selectbox("Filter by Prepared By:", prep_options)
 
-                    # 2. FILTER TRUCK METRICS (KM & WS Days remain independent of Preparer)
                     if selected_period.startswith("YTD"):
                         df_hist_filtered = df_history[df_history["Month"].str.startswith(str(curr_yr))]
                         df_metrics = df_hist_filtered.groupby("Truck")[["Mileage", "Workshop Days"]].sum().reset_index()
@@ -691,7 +689,6 @@ if file_trips is not None:
                         
                     df_metrics.rename(columns={"Mileage": "Total KM"}, inplace=True)
                     
-                    # 3. FILTER TRIPS & DESTINATIONS (Dynamic based on Time + Preparer)
                     if selected_period.startswith("YTD"):
                         df_trips_filtered = df_miloto[df_miloto["Month_Str"].str.startswith(str(curr_yr))].copy()
                     else:
@@ -703,11 +700,9 @@ if file_trips is not None:
                     else:
                         report_title = report_title_base
 
-                    # Calculate precise trip counts for this specific preparer/timeframe
                     t4_trip_counts = df_trips_filtered["Identity"].value_counts().reset_index()
                     t4_trip_counts.columns = ["Truck", "Total Trips"]
 
-                    # Extract destinations
                     dest_breakdown_dict = {}
                     if dest_col_name:
                         for truck in LIST_OF_TRUCKS:
@@ -722,13 +717,11 @@ if file_trips is not None:
                         for truck in LIST_OF_TRUCKS:
                             dest_breakdown_dict[truck] = "Destination column missing in Excel"
 
-                    # 4. BUILD THE DYNAMIC DATAFRAME
                     df_tab4 = pd.DataFrame({"Truck": LIST_OF_TRUCKS})
                     df_tab4 = df_tab4.merge(df_metrics[["Truck", "Total KM", "Workshop Days"]], on="Truck", how="left").fillna(0)
                     df_tab4 = df_tab4.merge(t4_trip_counts, on="Truck", how="left").fillna(0)
                     df_tab4["Destination Breakdown"] = df_tab4["Truck"].map(dest_breakdown_dict)
                     
-                    # Rearrange column order to look natural
                     df_tab4 = df_tab4[["Truck", "Total KM", "Total Trips", "Workshop Days", "Destination Breakdown"]]
 
                     st.write("---")
@@ -736,7 +729,6 @@ if file_trips is not None:
                     with sc5: sort_col_tab4 = st.selectbox("Sort Table By:", ["Total Trips", "Total KM", "Workshop Days", "Truck"], index=0, key="sort4_col")
                     with sc6: sort_asc_tab4 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort4_order") == "Ascending"
                     
-                    # STRICT NUMERIC ENFORCEMENT BEFORE SORTING
                     df_tab4["Total Trips"] = pd.to_numeric(df_tab4["Total Trips"], errors='coerce').fillna(0)
                     df_tab4["Total KM"] = pd.to_numeric(df_tab4["Total KM"], errors='coerce').fillna(0)
                     df_tab4["Workshop Days"] = pd.to_numeric(df_tab4["Workshop Days"], errors='coerce').fillna(0)
