@@ -278,7 +278,7 @@ def generate_ytd_tracker_pdf(df_multi, current_month_str):
 
     return pdf.output()
 
-def generate_destinations_pdf(df_dest, current_month_str):
+def generate_destinations_pdf(df_dest, report_title):
     pdf = FPDF(orientation="L", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -286,11 +286,11 @@ def generate_destinations_pdf(df_dest, current_month_str):
     pdf.set_font("Helvetica", "B", 18)
     pdf.cell(0, 10, "ZAMBEZI PORTLAND CEMENT", ln=True, align="C")
     pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 8, f"MONTHLY DESTINATION ANALYTICS - {current_month_str}", ln=True, align="C")
+    pdf.cell(0, 8, report_title, ln=True, align="C")
     pdf.ln(5)
 
     pdf.set_font("Helvetica", "B", 9)
-    cols = ["Truck", "Month KM", "Total Trips", "WS Days", "Destination Breakdown"]
+    cols = ["Truck", "Total KM", "Total Trips", "WS Days", "Destination Breakdown"]
     col_widths = [40, 25, 25, 25, 155]
     
     for i, col_name in enumerate(cols):
@@ -301,30 +301,25 @@ def generate_destinations_pdf(df_dest, current_month_str):
     for idx, row in df_dest.iterrows():
         text = str(row["Destination Breakdown"])
         
-        # PRE-CALCULATE HEIGHT to stop the infinite page-break loop
         text_width = pdf.get_string_width(text)
-        lines = int(text_width / 150) + 1  # 150mm is the safe width inside the 155mm cell
+        lines = int(text_width / 150) + 1  
         line_height = 6
         row_height = lines * line_height
         
-        # Manually trigger a clean page break if we are near the bottom of the A4 page
         if pdf.get_y() + row_height > 185:
             pdf.add_page()
             
         x_start = pdf.get_x()
         y_start = pdf.get_y()
         
-        # Print left-hand columns using dynamic row_height so borders perfectly match the text height
         pdf.cell(col_widths[0], row_height, str(row["Truck"]), border=1, align="C")
-        pdf.cell(col_widths[1], row_height, str(row["Current Month KM"]), border=1, align="C")
+        pdf.cell(col_widths[1], row_height, str(row["Total KM"]), border=1, align="C")
         pdf.cell(col_widths[2], row_height, str(row["Total Trips"]), border=1, align="C")
         pdf.cell(col_widths[3], row_height, str(row["Workshop Days"]), border=1, align="C")
         
-        # Print MultiCell text 
         pdf.set_xy(x_start + sum(col_widths[:4]), y_start)
         pdf.multi_cell(col_widths[4], line_height, text, border=1, align="L")
         
-        # Reset the Y coordinate to the absolute bottom of this newly rendered row to prep for the next row
         actual_bottom = max(pdf.get_y(), y_start + row_height)
         pdf.set_xy(pdf.l_margin, actual_bottom)
         
@@ -332,7 +327,7 @@ def generate_destinations_pdf(df_dest, current_month_str):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v8.2 (PDF MultiCell Page Break Loop Fixed)")
+st.caption("🟢 App Update: v9.0 (Dynamic Destination Time Filters Enabled)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -377,26 +372,6 @@ if file_trips is not None:
                 trip_counts.columns = ["Truck", "Total Trips"]
                 current_total_trips = trip_counts["Total Trips"].sum()
                 
-                dest_col_name = None
-                for col in ["Destination", "Location", "Site", "Route", "Customer", "To"]:
-                    if col in df_current_trips_raw.columns:
-                        dest_col_name = col
-                        break
-                        
-                dest_breakdown_dict = {}
-                if dest_col_name:
-                    for truck in LIST_OF_TRUCKS:
-                        truck_trips = df_current_trips_raw[df_current_trips_raw["Identity"] == truck]
-                        if not truck_trips.empty:
-                            dest_counts = truck_trips[dest_col_name].value_counts()
-                            dest_str = " | ".join([f"{str(k).title()}: {v}" for k, v in dest_counts.items()])
-                            dest_breakdown_dict[truck] = dest_str
-                        else:
-                            dest_breakdown_dict[truck] = "No Trips"
-                else:
-                    for truck in LIST_OF_TRUCKS:
-                        dest_breakdown_dict[truck] = "Destination column missing in Excel"
-                
                 df_ws_raw = get_raw_workshop_logs()
                 df_ws_current = df_ws_raw[df_ws_raw['Date'].str.startswith(current_month_str)] if not df_ws_raw.empty else pd.DataFrame()
                 if not df_ws_current.empty:
@@ -440,15 +415,6 @@ if file_trips is not None:
                 current_fleet_avg = round(current_net_days / current_total_trips, 2) if current_total_trips > 0 else 0.0
                 current_total_kms = df_tab1["Current Month KM"].sum()
 
-                # --- PREPARE DATA FOR TAB 4 ---
-                df_tab4 = pd.DataFrame({
-                    "Truck": LIST_OF_TRUCKS,
-                    "Current Month KM": df_tab1["Current Month KM"],
-                    "Total Trips": df_tab1["Total Trips"],
-                    "Workshop Days": df_tab1["Workshop Days"],
-                    "Destination Breakdown": [dest_breakdown_dict.get(t, "") for t in LIST_OF_TRUCKS]
-                })
-
                 all_months = sorted(list(set(list(monthly_totals.keys()) + list(ws_monthly_totals.keys()) + list(monthly_trip_counts['Month_Str'].unique()) + [current_month_str])))
                 
                 yearly_data = []
@@ -485,7 +451,6 @@ if file_trips is not None:
                 curr_yr = int(current_month_str[:4])
                 curr_mo = int(current_month_str[5:7])
 
-                # --- FUTURE-PROOF TRI-DIVISOR LOGIC ---
                 km_divisor = curr_mo if curr_yr == 2026 else (curr_mo if curr_yr > 2026 else 12)
                 
                 if curr_yr == 2026:
@@ -644,13 +609,10 @@ if file_trips is not None:
                         ("YTD Averages", "Avg WS/mo"),
                         ("YTD Averages", "TRUE Avg Days/Trip")
                     ]
-                    
                     readable_cols = [f"YTD {c[1]}" for c in ytd_sort_tuples]
                     
-                    with sc3: 
-                        selected_readable_col = st.selectbox("Sort Matrix By:", readable_cols, index=3)
-                    with sc4: 
-                        sort_asc_tab3 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort3") == "Ascending"
+                    with sc3: selected_readable_col = st.selectbox("Sort Matrix By:", readable_cols, index=3)
+                    with sc4: sort_asc_tab3 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort3") == "Ascending"
                     
                     actual_sort_tuple = ytd_sort_tuples[readable_cols.index(selected_readable_col)]
                     
@@ -666,7 +628,6 @@ if file_trips is not None:
                         df_multi = df_multi[::-1]
                     
                     avg_cols = [(m, "Avg Days/Trip") for m in month_names] + [("YTD Averages", "TRUE Avg Days/Trip")]
-                    
                     try:
                         styled_matrix = df_multi.style.map(color_traffic_light, subset=avg_cols)
                     except AttributeError:
@@ -675,7 +636,6 @@ if file_trips is not None:
                     st.dataframe(styled_matrix, use_container_width=True, hide_index=True)
                     
                     c_btn5, c_btn6 = st.columns(2)
-                    
                     df_csv_export = df_multi.copy()
                     df_csv_export.columns = [' '.join(col).strip() for col in df_csv_export.columns.values]
                     
@@ -684,30 +644,81 @@ if file_trips is not None:
 
                 # --- TAB 4: DESTINATIONS ---
                 with tab4:
-                    st.subheader(f"📍 Route Frequency Breakdown ({current_month_str})")
+                    st.subheader(f"📍 Geographic Route Analytics")
+                    
+                    # 1. DYNAMIC TIME FILTER
+                    time_options = [f"YTD {curr_yr}"] + [m for m in all_months if m.startswith(str(curr_yr))]
+                    # Default to the current month to match standard behavior
+                    default_idx = time_options.index(current_month_str) if current_month_str in time_options else 0
+                    selected_period = st.selectbox("Select Time Period:", time_options, index=default_idx)
+                    
+                    # 2. FILTER METRICS based on selection
+                    if selected_period.startswith("YTD"):
+                        df_hist_filtered = df_history[df_history["Month"].str.startswith(str(curr_yr))]
+                        df_metrics = df_hist_filtered.groupby("Truck")[["Mileage", "Total Trips", "Workshop Days"]].sum().reset_index()
+                        report_title = f"DESTINATION ANALYTICS - YTD {curr_yr}"
+                    else:
+                        df_hist_filtered = df_history[df_history["Month"] == selected_period]
+                        df_metrics = df_hist_filtered[["Truck", "Mileage", "Total Trips", "Workshop Days"]].copy()
+                        report_title = f"MONTHLY DESTINATION ANALYTICS - {selected_period}"
+                        
+                    df_metrics.rename(columns={"Mileage": "Total KM"}, inplace=True)
+                    
+                    # 3. FILTER DESTINATIONS based on selection
+                    dest_col_name = None
+                    for col in ["Destination", "Location", "Site", "Route", "Customer", "To"]:
+                        if col in df_miloto.columns:
+                            dest_col_name = col
+                            break
+
                     if not dest_col_name:
                         st.warning("⚠️ Could not find a destination column in the uploaded Trips file. Please ensure it has a column named 'Destination', 'Location', 'Site', or 'Route'.")
                     
+                    if selected_period.startswith("YTD"):
+                        df_trips_filtered = df_miloto[df_miloto["Month_Str"].str.startswith(str(curr_yr))]
+                    else:
+                        df_trips_filtered = df_miloto[df_miloto["Month_Str"] == selected_period]
+
+                    dest_breakdown_dict = {}
+                    if dest_col_name:
+                        for truck in LIST_OF_TRUCKS:
+                            truck_trips = df_trips_filtered[df_trips_filtered["Identity"] == truck]
+                            if not truck_trips.empty:
+                                dest_counts = truck_trips[dest_col_name].value_counts()
+                                dest_str = " | ".join([f"{str(k).title()}: {v}" for k, v in dest_counts.items()])
+                                dest_breakdown_dict[truck] = dest_str
+                            else:
+                                dest_breakdown_dict[truck] = "No Trips"
+                    else:
+                        for truck in LIST_OF_TRUCKS:
+                            dest_breakdown_dict[truck] = "Destination column missing in Excel"
+
+                    # 4. BUILD THE DYNAMIC DATAFRAME
+                    df_tab4 = pd.DataFrame({"Truck": LIST_OF_TRUCKS})
+                    df_tab4 = df_tab4.merge(df_metrics, on="Truck", how="left").fillna(0)
+                    df_tab4["Destination Breakdown"] = df_tab4["Truck"].map(dest_breakdown_dict)
+
                     st.write("---")
                     sc5, sc6 = st.columns([2, 1])
-                    with sc5: sort_col_tab4 = st.selectbox("Sort Table By:", ["Total Trips", "Current Month KM", "Workshop Days", "Truck"], index=0, key="sort4_col")
+                    with sc5: sort_col_tab4 = st.selectbox("Sort Table By:", ["Total Trips", "Total KM", "Workshop Days", "Truck"], index=0, key="sort4_col")
                     with sc6: sort_asc_tab4 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort4_order") == "Ascending"
                     
                     df_tab4["Total Trips"] = pd.to_numeric(df_tab4["Total Trips"], errors='coerce').fillna(0)
-                    df_tab4["Current Month KM"] = pd.to_numeric(df_tab4["Current Month KM"], errors='coerce').fillna(0)
+                    df_tab4["Total KM"] = pd.to_numeric(df_tab4["Total KM"], errors='coerce').fillna(0)
                     df_tab4["Workshop Days"] = pd.to_numeric(df_tab4["Workshop Days"], errors='coerce').fillna(0)
 
                     df_tab4 = df_tab4.sort_values(by=sort_col_tab4, ascending=sort_asc_tab4).reset_index(drop=True)
                     
                     df_tab4["Total Trips"] = df_tab4["Total Trips"].astype(int)
-                    df_tab4["Current Month KM"] = df_tab4["Current Month KM"].astype(int)
+                    df_tab4["Total KM"] = df_tab4["Total KM"].astype(int)
                     df_tab4["Workshop Days"] = df_tab4["Workshop Days"].astype(int)
 
                     st.dataframe(df_tab4, use_container_width=True, hide_index=True)
                     
                     c_btn7, c_btn8 = st.columns(2)
-                    with c_btn7: st.download_button("⬇️ Download Destination CSV", data=df_tab4.to_csv(index=False).encode('utf-8'), file_name=f"destinations_{current_month_str}.csv", mime="text/csv", use_container_width=True)
-                    with c_btn8: st.download_button("📄 Generate Destination PDF Report", data=bytes(generate_destinations_pdf(df_tab4, current_month_str)), file_name=f"ZPC_Destinations_{current_month_str}.pdf", mime="application/pdf", use_container_width=True, type="primary")
+                    file_suffix = selected_period.replace(' ', '_')
+                    with c_btn7: st.download_button("⬇️ Download Destination CSV", data=df_tab4.to_csv(index=False).encode('utf-8'), file_name=f"destinations_{file_suffix}.csv", mime="text/csv", use_container_width=True)
+                    with c_btn8: st.download_button("📄 Generate Destination PDF Report", data=bytes(generate_destinations_pdf(df_tab4, report_title)), file_name=f"ZPC_Destinations_{file_suffix}.pdf", mime="application/pdf", use_container_width=True, type="primary")
 
     except Exception as e:
         st.error(f"❌ Error: {e}")
