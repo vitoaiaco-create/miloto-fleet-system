@@ -289,9 +289,10 @@ def generate_destinations_pdf(df_dest, report_title):
     pdf.cell(0, 8, report_title, ln=True, align="C")
     pdf.ln(5)
 
+    # RE-ENGINEERED 6-COLUMN LAYOUT
     pdf.set_font("Helvetica", "B", 9)
-    cols = ["Truck", "Total KM", "Total Trips", "WS Days", "Destination Breakdown"]
-    col_widths = [40, 25, 25, 25, 155]
+    cols = ["Truck", "Total KM", "Total Trips", "WS Days", "% Kasumbalesa", "Destination Breakdown"]
+    col_widths = [35, 22, 22, 22, 27, 142] # Total width = 270mm
     
     for i, col_name in enumerate(cols):
         pdf.cell(col_widths[i], 8, str(col_name), border=1, align="C")
@@ -302,7 +303,7 @@ def generate_destinations_pdf(df_dest, report_title):
         text = str(row["Destination Breakdown"])
         
         text_width = pdf.get_string_width(text)
-        lines = int(text_width / 150) + 1  
+        lines = int(text_width / 138) + 1  # Calculated dynamically to fit inside the 142mm cell
         line_height = 6
         row_height = lines * line_height
         
@@ -312,13 +313,17 @@ def generate_destinations_pdf(df_dest, report_title):
         x_start = pdf.get_x()
         y_start = pdf.get_y()
         
+        # Format the float into a percentage string for the PDF
+        kas_val = f"{row['% Kasumbalesa']:.1f}%"
+        
         pdf.cell(col_widths[0], row_height, str(row["Truck"]), border=1, align="C")
         pdf.cell(col_widths[1], row_height, str(row["Total KM"]), border=1, align="C")
         pdf.cell(col_widths[2], row_height, str(row["Total Trips"]), border=1, align="C")
         pdf.cell(col_widths[3], row_height, str(row["Workshop Days"]), border=1, align="C")
+        pdf.cell(col_widths[4], row_height, kas_val, border=1, align="C")
         
-        pdf.set_xy(x_start + sum(col_widths[:4]), y_start)
-        pdf.multi_cell(col_widths[4], line_height, text, border=1, align="L")
+        pdf.set_xy(x_start + sum(col_widths[:5]), y_start)
+        pdf.multi_cell(col_widths[5], line_height, text, border=1, align="L")
         
         actual_bottom = max(pdf.get_y(), y_start + row_height)
         pdf.set_xy(pdf.l_margin, actual_bottom)
@@ -327,7 +332,7 @@ def generate_destinations_pdf(df_dest, report_title):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v10.1 (Syntax Fix)")
+st.caption("🟢 App Update: v11.0 (Dynamic '% Kasumbalesa' Tracking)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -445,10 +450,7 @@ if file_trips is not None:
                     except: return 30
                         
                 df_history["Total Days"] = df_history["Month"].apply(get_days_in_month)
-                
-                # --- FIXED SYNTAX ERROR HERE ---
                 df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r["Total Days"] - r["Workshop Days"]), axis=1)
-                
                 df_history["Avg Days/Trip"] = df_history.apply(lambda r: round(r["Net Available Days"] / r["Total Trips"], 2) if r["Total Trips"] > 0 else 0.0, axis=1)
 
                 curr_yr = int(current_month_str[:4])
@@ -579,6 +581,7 @@ if file_trips is not None:
                         y_2025 = [monthly_totals.get(f"2025-{m}", 0) for m in months_labels]
                         y_2026 = [monthly_totals.get(f"2026-{m}", 0) for m in months_labels]
 
+                        import matplotlib.pyplot as plt
                         fig, ax = plt.subplots(figsize=(10, 4))
                         bar_width = 0.35
                         x = range(len(months_labels))
@@ -703,6 +706,14 @@ if file_trips is not None:
                     t4_trip_counts = df_trips_filtered["Identity"].value_counts().reset_index()
                     t4_trip_counts.columns = ["Truck", "Total Trips"]
 
+                    # --- KASUMBALESA MATH LOGIC ---
+                    if dest_col_name:
+                        kas_trips = df_trips_filtered[df_trips_filtered[dest_col_name].astype(str).str.lower().str.contains("kasumbalesa", na=False)]
+                        t4_kas_counts = kas_trips["Identity"].value_counts().reset_index()
+                        t4_kas_counts.columns = ["Truck", "Kas Trips"]
+                    else:
+                        t4_kas_counts = pd.DataFrame(columns=["Truck", "Kas Trips"])
+
                     dest_breakdown_dict = {}
                     if dest_col_name:
                         for truck in LIST_OF_TRUCKS:
@@ -720,14 +731,20 @@ if file_trips is not None:
                     df_tab4 = pd.DataFrame({"Truck": LIST_OF_TRUCKS})
                     df_tab4 = df_tab4.merge(df_metrics[["Truck", "Total KM", "Workshop Days"]], on="Truck", how="left").fillna(0)
                     df_tab4 = df_tab4.merge(t4_trip_counts, on="Truck", how="left").fillna(0)
+                    df_tab4 = df_tab4.merge(t4_kas_counts, on="Truck", how="left").fillna(0)
                     df_tab4["Destination Breakdown"] = df_tab4["Truck"].map(dest_breakdown_dict)
                     
-                    df_tab4 = df_tab4[["Truck", "Total KM", "Total Trips", "Workshop Days", "Destination Breakdown"]]
+                    # Calculate % Kasumbalesa dynamically as a precise float for sorting
+                    df_tab4["% Kasumbalesa"] = df_tab4.apply(
+                        lambda r: round((r['Kas Trips'] / r['Total Trips'] * 100), 1) if r['Total Trips'] > 0 else 0.0, axis=1
+                    )
+                    
+                    df_tab4 = df_tab4[["Truck", "Total KM", "Total Trips", "Workshop Days", "% Kasumbalesa", "Destination Breakdown"]]
 
                     st.write("---")
                     sc5, sc6 = st.columns([2, 1])
-                    with sc5: sort_col_tab4 = st.selectbox("Sort Table By:", ["Total Trips", "Total KM", "Workshop Days", "Truck"], index=0, key="sort4_col")
-                    with sc6: sort_asc_tab4 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort4_order") == "Ascending"
+                    with sc5: sort_col_tab4 = st.selectbox("Sort Table By:", ["% Kasumbalesa", "Total Trips", "Total KM", "Workshop Days", "Truck"], index=0, key="sort4_col")
+                    with sc6: sort_asc_tab4 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort4_order") == "Descending"
                     
                     df_tab4["Total Trips"] = pd.to_numeric(df_tab4["Total Trips"], errors='coerce').fillna(0)
                     df_tab4["Total KM"] = pd.to_numeric(df_tab4["Total KM"], errors='coerce').fillna(0)
@@ -739,7 +756,8 @@ if file_trips is not None:
                     df_tab4["Total KM"] = df_tab4["Total KM"].astype(int)
                     df_tab4["Workshop Days"] = df_tab4["Workshop Days"].astype(int)
 
-                    st.dataframe(df_tab4, use_container_width=True, hide_index=True)
+                    # Presenting the float as a formatted string in the Web UI
+                    st.dataframe(df_tab4.style.format({"% Kasumbalesa": "{:.1f}%"}), use_container_width=True, hide_index=True)
                     
                     c_btn7, c_btn8 = st.columns(2)
                     file_suffix = selected_period.replace(' ', '_')
