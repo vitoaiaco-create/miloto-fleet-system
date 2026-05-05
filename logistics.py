@@ -6,7 +6,7 @@ import io
 import itertools
 from calendar import monthrange
 from datetime import datetime
-import matplotlib.pyplot as plt
+import matplotlib.subplots as plt
 from fpdf import FPDF
 
 # --- 1. FLEET SETUP ---
@@ -171,6 +171,7 @@ def generate_yearly_pdf(df_yearly, monthly_totals):
         y_2025 = [monthly_totals.get(f"2025-{m}", 0) for m in months_labels]
         y_2026 = [monthly_totals.get(f"2026-{m}", 0) for m in months_labels]
 
+        import matplotlib.pyplot as plt
         fig, ax = plt.subplots(figsize=(10, 4.5))
         bar_width = 0.35
         x = range(len(months_labels))
@@ -285,7 +286,7 @@ def generate_destinations_pdf(df_dest, report_title):
     
     pdf.set_font("Helvetica", "B", 18)
     pdf.cell(0, 10, "ZAMBEZI PORTLAND CEMENT", ln=True, align="C")
-    pdf.set_font("Helvetica", "B", 14)
+    pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 8, report_title, ln=True, align="C")
     pdf.ln(5)
 
@@ -327,7 +328,7 @@ def generate_destinations_pdf(df_dest, report_title):
 
 # --- 5. UI & FILE UPLOAD ---
 st.title(":material/route: Logistics & Kilometre Dashboard")
-st.caption("🟢 App Update: v9.0 (Dynamic Destination Time Filters Enabled)")
+st.caption("🟢 App Update: v10.0 (Prepared By Filter & Dynamic Rendering)")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -364,7 +365,7 @@ if file_trips is not None:
                     total_days_in_month = 30
                     df_raw["Month_Str"] = current_month_str
                 
-                df_miloto = df_raw[df_raw["Identity"].isin(LIST_OF_TRUCKS)]
+                df_miloto = df_raw[df_raw["Identity"].isin(LIST_OF_TRUCKS)].copy()
                 monthly_trip_counts = df_miloto.groupby(['Month_Str', 'Identity']).size().reset_index(name='Total Trips')
                 
                 df_current_trips_raw = df_miloto[df_miloto["Month_Str"] == current_month_str].copy()
@@ -445,7 +446,7 @@ if file_trips is not None:
                     except: return 30
                         
                 df_history["Total Days"] = df_history["Month"].apply(get_days_in_month)
-                df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r["Total Days"] - r["Workshop Days"]), axis=1)
+                df_history["Net Available Days"] = df_history.apply(lambda r: max(0, r r["Total Days"] - r["Workshop Days"]), axis=1)
                 df_history["Avg Days/Trip"] = df_history.apply(lambda r: round(r["Net Available Days"] / r["Total Trips"], 2) if r["Total Trips"] > 0 else 0.0, axis=1)
 
                 curr_yr = int(current_month_str[:4])
@@ -576,6 +577,7 @@ if file_trips is not None:
                         y_2025 = [monthly_totals.get(f"2025-{m}", 0) for m in months_labels]
                         y_2026 = [monthly_totals.get(f"2026-{m}", 0) for m in months_labels]
 
+                        import matplotlib.pyplot as plt
                         fig, ax = plt.subplots(figsize=(10, 4))
                         bar_width = 0.35
                         x = range(len(months_labels))
@@ -646,25 +648,13 @@ if file_trips is not None:
                 with tab4:
                     st.subheader(f"📍 Geographic Route Analytics")
                     
-                    # 1. DYNAMIC TIME FILTER
-                    time_options = [f"YTD {curr_yr}"] + [m for m in all_months if m.startswith(str(curr_yr))]
-                    # Default to the current month to match standard behavior
-                    default_idx = time_options.index(current_month_str) if current_month_str in time_options else 0
-                    selected_period = st.selectbox("Select Time Period:", time_options, index=default_idx)
-                    
-                    # 2. FILTER METRICS based on selection
-                    if selected_period.startswith("YTD"):
-                        df_hist_filtered = df_history[df_history["Month"].str.startswith(str(curr_yr))]
-                        df_metrics = df_hist_filtered.groupby("Truck")[["Mileage", "Total Trips", "Workshop Days"]].sum().reset_index()
-                        report_title = f"DESTINATION ANALYTICS - YTD {curr_yr}"
-                    else:
-                        df_hist_filtered = df_history[df_history["Month"] == selected_period]
-                        df_metrics = df_hist_filtered[["Truck", "Mileage", "Total Trips", "Workshop Days"]].copy()
-                        report_title = f"MONTHLY DESTINATION ANALYTICS - {selected_period}"
-                        
-                    df_metrics.rename(columns={"Mileage": "Total KM"}, inplace=True)
-                    
-                    # 3. FILTER DESTINATIONS based on selection
+                    # Search for Prepared By and Destination columns
+                    prep_col_name = None
+                    for col in ["Prepared By", "Prepared by", "prepared by", "User", "Created By"]:
+                        if col in df_miloto.columns:
+                            prep_col_name = col
+                            break
+                            
                     dest_col_name = None
                     for col in ["Destination", "Location", "Site", "Route", "Customer", "To"]:
                         if col in df_miloto.columns:
@@ -672,13 +662,52 @@ if file_trips is not None:
                             break
 
                     if not dest_col_name:
-                        st.warning("⚠️ Could not find a destination column in the uploaded Trips file. Please ensure it has a column named 'Destination', 'Location', 'Site', or 'Route'.")
+                        st.warning("⚠️ Could not find a destination column in the uploaded Trips file.")
                     
-                    if selected_period.startswith("YTD"):
-                        df_trips_filtered = df_miloto[df_miloto["Month_Str"].str.startswith(str(curr_yr))]
+                    # 1. DYNAMIC FILTERS UI
+                    time_options = [f"YTD {curr_yr}"] + [m for m in all_months if m.startswith(str(curr_yr))]
+                    default_idx = time_options.index(current_month_str) if current_month_str in time_options else 0
+                    
+                    if prep_col_name:
+                        prep_options = ["All"] + sorted([str(x) for x in df_miloto[prep_col_name].dropna().unique()])
                     else:
-                        df_trips_filtered = df_miloto[df_miloto["Month_Str"] == selected_period]
+                        prep_options = ["All"]
 
+                    col_t4_1, col_t4_2 = st.columns(2)
+                    with col_t4_1:
+                        selected_period = st.selectbox("Select Time Period:", time_options, index=default_idx)
+                    with col_t4_2:
+                        selected_preparer = st.selectbox("Filter by Prepared By:", prep_options)
+
+                    # 2. FILTER TRUCK METRICS (KM & WS Days remain independent of Preparer)
+                    if selected_period.startswith("YTD"):
+                        df_hist_filtered = df_history[df_history["Month"].str.startswith(str(curr_yr))]
+                        df_metrics = df_hist_filtered.groupby("Truck")[["Mileage", "Workshop Days"]].sum().reset_index()
+                        report_title_base = f"DESTINATION ANALYTICS - YTD {curr_yr}"
+                    else:
+                        df_hist_filtered = df_history[df_history["Month"] == selected_period]
+                        df_metrics = df_hist_filtered[["Truck", "Mileage", "Workshop Days"]].copy()
+                        report_title_base = f"MONTHLY DESTINATION ANALYTICS - {selected_period}"
+                        
+                    df_metrics.rename(columns={"Mileage": "Total KM"}, inplace=True)
+                    
+                    # 3. FILTER TRIPS & DESTINATIONS (Dynamic based on Time + Preparer)
+                    if selected_period.startswith("YTD"):
+                        df_trips_filtered = df_miloto[df_miloto["Month_Str"].str.startswith(str(curr_yr))].copy()
+                    else:
+                        df_trips_filtered = df_miloto[df_miloto["Month_Str"] == selected_period].copy()
+
+                    if selected_preparer != "All" and prep_col_name:
+                        df_trips_filtered = df_trips_filtered[df_trips_filtered[prep_col_name].astype(str) == selected_preparer]
+                        report_title = f"{report_title_base} (Prepared By: {selected_preparer})"
+                    else:
+                        report_title = report_title_base
+
+                    # Calculate precise trip counts for this specific preparer/timeframe
+                    t4_trip_counts = df_trips_filtered["Identity"].value_counts().reset_index()
+                    t4_trip_counts.columns = ["Truck", "Total Trips"]
+
+                    # Extract destinations
                     dest_breakdown_dict = {}
                     if dest_col_name:
                         for truck in LIST_OF_TRUCKS:
@@ -695,14 +724,19 @@ if file_trips is not None:
 
                     # 4. BUILD THE DYNAMIC DATAFRAME
                     df_tab4 = pd.DataFrame({"Truck": LIST_OF_TRUCKS})
-                    df_tab4 = df_tab4.merge(df_metrics, on="Truck", how="left").fillna(0)
+                    df_tab4 = df_tab4.merge(df_metrics[["Truck", "Total KM", "Workshop Days"]], on="Truck", how="left").fillna(0)
+                    df_tab4 = df_tab4.merge(t4_trip_counts, on="Truck", how="left").fillna(0)
                     df_tab4["Destination Breakdown"] = df_tab4["Truck"].map(dest_breakdown_dict)
+                    
+                    # Rearrange column order to look natural
+                    df_tab4 = df_tab4[["Truck", "Total KM", "Total Trips", "Workshop Days", "Destination Breakdown"]]
 
                     st.write("---")
                     sc5, sc6 = st.columns([2, 1])
                     with sc5: sort_col_tab4 = st.selectbox("Sort Table By:", ["Total Trips", "Total KM", "Workshop Days", "Truck"], index=0, key="sort4_col")
                     with sc6: sort_asc_tab4 = st.radio("Order:", ["Ascending", "Descending"], horizontal=True, key="sort4_order") == "Ascending"
                     
+                    # STRICT NUMERIC ENFORCEMENT BEFORE SORTING
                     df_tab4["Total Trips"] = pd.to_numeric(df_tab4["Total Trips"], errors='coerce').fillna(0)
                     df_tab4["Total KM"] = pd.to_numeric(df_tab4["Total KM"], errors='coerce').fillna(0)
                     df_tab4["Workshop Days"] = pd.to_numeric(df_tab4["Workshop Days"], errors='coerce').fillna(0)
@@ -717,6 +751,9 @@ if file_trips is not None:
                     
                     c_btn7, c_btn8 = st.columns(2)
                     file_suffix = selected_period.replace(' ', '_')
+                    if selected_preparer != "All":
+                        file_suffix += f"_by_{selected_preparer.replace(' ', '')}"
+                        
                     with c_btn7: st.download_button("⬇️ Download Destination CSV", data=df_tab4.to_csv(index=False).encode('utf-8'), file_name=f"destinations_{file_suffix}.csv", mime="text/csv", use_container_width=True)
                     with c_btn8: st.download_button("📄 Generate Destination PDF Report", data=bytes(generate_destinations_pdf(df_tab4, report_title)), file_name=f"ZPC_Destinations_{file_suffix}.pdf", mime="application/pdf", use_container_width=True, type="primary")
 
